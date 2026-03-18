@@ -1,0 +1,155 @@
+{
+  "@@locale": "en",
+
+  "appName": "Семья",
+
+  "languageSelectionTitle": "Choose your language",
+  "languageSelectionSubtitle": "You can change this later in Settings.",
+  "languageEnglish": "English",
+  "languageRussian": "Русский",
+  "continueButton": "Continue",
+
+  "encryptedFamilyMessaging": "Encrypted family messaging",
+  "enterPhoneNumber": "Enter your phone number",
+  "phoneVerificationDescription": "We'll send a verification code to confirm your number.",
+  "phoneNumberLabel": "Phone number",
+  "phoneNumberHint": "+1 555 000 0000",
+  "phoneNumberEmpty": "Please enter your phone number.",
+  "phoneNumberInvalid": "Please enter a valid phone number.",
+  "sendCode": "Send Code",
+  "standardRatesDisclaimer": "Standard message and data rates may apply.",
+
+  "verifyNumber": "Verify Number",
+  "enterSixDigitCode": "Enter the 6-digit code",
+  "verificationCodeSent": "We sent a verification code to your phone number.",
+  "verificationExpired": "Verification session expired. Please go back and try again.",
+  "verify": "Verify",
+  "resendCodeIn": "Resend code in {seconds}s",
+  "@resendCodeIn": {
+    "placeholders": {
+      "seconds": { "type": "int" }
+    }
+  },
+  "resendCode": "Resend Code",
+
+  "setupProfile": "Set up your profile",
+  "chooseDisplayName": "Choose a display name visible to your family.",
+  "displayNameLabel": "Display name",
+  "displayNameHint": "e.g. Mama, Papa, Dasha…",
+  "displayNameEmpty": "Please enter a display name.",
+  "displayNameTooShort": "Name must be at least 2 characters.",
+  "changeInSettings": "You can change this at any time in Settings.",
+  "getStarted": "Get Started",
+
+  "search": "Search",
+  "settings": "Settings",
+  "newChat": "New Chat",
+  "errorLoadingConversations": "Error loading conversations:\n{error}",
+  "@errorLoadingConversations": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "newGroup": "New Group",
+  "createGroupConversation": "Create a group conversation",
+  "searchByPhoneNumber": "Search by phone number",
+  "enterPhoneToFind": "Enter a phone number to find family members.",
+  "searchFailed": "Search failed: {error}",
+  "@searchFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "noUsersFound": "No users found.",
+  "unknown": "Unknown",
+  "chat": "Chat",
+  "group": "Group",
+  "noConversationsYet": "No conversations yet",
+  "startConversationPrompt": "Start a private or group conversation with your family members.",
+  "startConversation": "Start a Conversation",
+  "loading": "Loading...",
+
+  "editProfile": "Edit profile",
+  "account": "Account",
+  "profile": "Profile",
+  "displayNamePhoto": "Display name, photo",
+  "preferences": "Preferences",
+  "notifications": "Notifications",
+  "alertsSoundsBadges": "Alerts, sounds, badges",
+  "privacy": "Privacy",
+  "privacySubtitle": "Who can message you, read receipts",
+  "language": "Language",
+  "languageSubtitle": "English, Русский",
+  "signOut": "Sign Out",
+  "signOutConfirmTitle": "Sign Out",
+  "signOutConfirmMessage": "Are you sure you want to sign out? You will need to verify your phone number again to sign in.",
+  "cancel": "Cancel",
+
+  "microphonePermissionRequired": "Microphone permission is required for voice notes.",
+  "errorGeneric": "Error: {error}",
+  "@errorGeneric": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "sendFailed": "Send failed: {error}",
+  "@sendFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "today": "Today",
+  "yesterday": "Yesterday",
+  "sayHello": "Say hello!",
+  "sendingVoiceMessage": "Sending voice message...",
+  "message": "Message",
+  "recording": "Recording...",
+  "voiceMessage": "Voice message",
+
+  "create": "Create",
+  "groupNameLabel": "Group name",
+  "groupNameHint": "e.g. Osborne Family",
+  "groupNameEmpty": "Please enter a group name.",
+  "groupNameTooShort": "Name must be at least 2 characters.",
+  "membersCount": "Members ({count})",
+  "@membersCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "searchForFamilyMembers": "Search for family members by phone number.",
+  "noUsersFoundInstallApp": "No users found. Make sure they have the app installed.",
+  "failedToCreateGroup": "Failed to create group: {error}",
+  "@failedToCreateGroup": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "addMembersToContinue": "Add members to continue",
+  "createGroup": "Create Group",
+
+  "call": "Call",
+  "ringing": "Ringing...",
+  "connecting": "Connecting...",
+  "callEnded": "Call ended",
+  "unmute": "Unmute",
+  "mute": "Mute",
+  "speaker": "Speaker",
+  "end": "End",
+
+  "video": "Video",
+  "flipCamera": "Flip",
+
+  "accept": "Accept",
+  "decline": "Decline",
+
+  "photo": "Photo",
+  "videoMessage": "Video",
+  "sendingMedia": "Sending media...",
+  "photoFromGallery": "Photo from Gallery",
+  "videoFromGallery": "Video from Gallery",
+  "takePhoto": "Take Photo",
+  "takeVideo": "Take Video",
+  "compressingVideo": "Compressing video...",
+  "loadingOlderMessages": "Loading older messages..."
+}

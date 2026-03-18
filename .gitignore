@@ -1,0 +1,46 @@
+# Flutter / Dart
+.dart_tool/
+.packages
+.pub-cache/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.flutter-compile/
+
+# Keep pubspec.lock for apps, but ignore generated lockfiles in other contexts
+# pubspec.lock
+
+# Android
+**/android/.gradle/
+**/android/app/*.keystore
+android/key.properties
+android/local.properties
+
+# iOS
+ios/Flutter/Flutter.podspec
+ios/Pods/
+**/GoogleService-Info.plist
+
+# Firebase / Google services
+**/google-services.json
+functions/serviceAccount*.json
+functions/.runtimeconfig.json
+.firebase/
+
+# IDEs
+.idea/
+.vscode/
+*.iml
+
+# macOS
+.DS_Store
+
+# Env / secrets
+.env
+*.env
+*.key
+*.p12
+*.jks
+
+# Logs
+*.log

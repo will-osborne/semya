@@ -1,0 +1,468 @@
+import {onDocumentCreated} from "firebase-functions/v2/firestore";
+import {onCall, HttpsError} from "firebase-functions/v2/https";
+import {onSchedule} from "firebase-functions/v2/scheduler";
+import {defineSecret} from "firebase-functions/params";
+import {initializeApp} from "firebase-admin/app";
+import {getFirestore, FieldValue} from "firebase-admin/firestore";
+import {getMessaging} from "firebase-admin/messaging";
+import {ApnsClient, Host, Notification as ApnsNotification} from "apns2";
+
+initializeApp();
+
+const db = getFirestore();
+const messaging = getMessaging();
+
+// APNs credentials stored as Firebase secrets.
+// Set via: firebase functions:secrets:set APNS_KEY_ID, etc.
+const apnsKeyId = defineSecret("APNS_KEY_ID");
+const apnsTeamId = defineSecret("APNS_TEAM_ID");
+const apnsSigningKey = defineSecret("APNS_SIGNING_KEY");
+const apnsBundleId = defineSecret("APNS_BUNDLE_ID");
+// Set to "true" for development/debug builds, "false" (or unset) for
+// TestFlight/App Store. Controls which APNs endpoint receives VoIP pushes.
+// Set via: firebase functions:secrets:set APNS_SANDBOX
+const apnsSandbox = defineSecret("APNS_SANDBOX");
+
+// Cloudflare TURN credentials.
+// Set via: firebase functions:secrets:set CF_TURN_TOKEN_ID, CF_TURN_API_TOKEN
+const cfTurnTokenId = defineSecret("CF_TURN_TOKEN_ID");
+const cfTurnApiToken = defineSecret("CF_TURN_API_TOKEN");
+
+// ---------------------------------------------------------------------------
+// Helper: normalize APNs secrets
+// ---------------------------------------------------------------------------
+
+function normalizeSecretValue(value: string): string {
+  const trimmed = value.trim();
+  if ((trimmed.startsWith("\"") && trimmed.endsWith("\"")) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function resolveApnsConfig() {
+  const keyId = normalizeSecretValue(apnsKeyId.value());
+  const team = normalizeSecretValue(apnsTeamId.value());
+  const bundleId = normalizeSecretValue(apnsBundleId.value());
+  const signingKey = normalizeSecretValue(apnsSigningKey.value())
+    .replace(/\\n/g, "\n");
+  const sandboxValue = normalizeSecretValue(apnsSandbox.value() ?? "");
+  const isSandbox = sandboxValue.toLowerCase() === "true";
+
+  if (!signingKey.includes("BEGIN PRIVATE KEY")) {
+    throw new Error("APNS_SIGNING_KEY is not a valid .p8 private key");
+  }
+
+  return {keyId, team, bundleId, signingKey, isSandbox};
+}
+
+// ---------------------------------------------------------------------------
+// Helper: send notifications and clean up invalid tokens
+// ---------------------------------------------------------------------------
+
+async function sendToTokens(
+  tokens: string[],
+  title: string,
+  body: string,
+  data: Record<string, string>,
+  userTokenMap: Map<string, {userId: string; token: string}>,
+): Promise<void> {
+  if (tokens.length === 0) return;
+
+  const response = await messaging.sendEachForMulticast({
+    tokens,
+    notification: {title, body},
+    data,
+    android: {priority: "high"},
+    apns: {
+      payload: {aps: {sound: "default", contentAvailable: true}},
+    },
+  });
+
+  // Clean up invalid/expired tokens by overwriting with the valid subset.
+  // Using arrayRemove fails if the Firestore field contains nested arrays.
+  if (response.failureCount > 0) {
+    const invalidCodes = new Set([
+      "messaging/invalid-registration-token",
+      "messaging/registration-token-not-registered",
+    ]);
+
+    // Group invalid tokens by userId.
+    const invalidByUser = new Map<string, Set<string>>();
+    response.responses.forEach((resp, idx) => {
+      if (resp.error && invalidCodes.has(resp.error.code)) {
+        const entry = userTokenMap.get(tokens[idx]);
+        if (entry) {
+          if (!invalidByUser.has(entry.userId)) {
+            invalidByUser.set(entry.userId, new Set());
+          }
+          invalidByUser.get(entry.userId)!.add(entry.token);
+        }
+      }
+    });
+
+    // For each affected user, read current tokens, filter, and overwrite.
+    const updates: Promise<unknown>[] = [];
+    for (const [userId, badTokens] of invalidByUser) {
+      updates.push(
+        db.collection("users").doc(userId).get().then(async (snap) => {
+          const raw: unknown[] = snap.data()?.fcmTokens ?? [];
+          const clean = raw.filter(
+            (t): t is string => typeof t === "string" && !badTokens.has(t),
+          );
+          await snap.ref.update({fcmTokens: clean});
+        }),
+      );
+    }
+    await Promise.all(updates);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// APNs client cache — reuses the HTTP/2 connection across warm invocations.
+// ---------------------------------------------------------------------------
+
+let _cachedApnsClient: ApnsClient | null = null;
+let _cachedApnsIsSandbox: boolean | null = null;
+
+function getApnsClient(): ApnsClient {
+  const {team, keyId, signingKey, bundleId, isSandbox} = resolveApnsConfig();
+  if (_cachedApnsClient === null || _cachedApnsIsSandbox !== isSandbox) {
+    _cachedApnsClient = new ApnsClient({
+      team,
+      keyId,
+      signingKey,
+      defaultTopic: `${bundleId}.voip`,
+      host: isSandbox ? Host.development : Host.production,
+    });
+    _cachedApnsIsSandbox = isSandbox;
+  }
+  return _cachedApnsClient;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: send VoIP push via APNs (iOS only)
+// ---------------------------------------------------------------------------
+
+async function sendVoipPush(
+  voipToken: string,
+  callId: string,
+  callerId: string,
+  callerName: string,
+): Promise<void> {
+  const client = getApnsClient();
+
+  const notification = new ApnsNotification(voipToken, {
+    type: "voip" as never,
+    priority: 10,
+    data: {
+      callId,
+      callerId,
+      callerName,
+      uuid: callId,
+      nameCaller: callerName,
+    },
+    aps: {
+      "content-available": 1,
+    },
+  });
+
+  await client.send(notification);
+  console.log("VoIP push sent successfully");
+}
+
+// ---------------------------------------------------------------------------
+// Trigger: new message → notify other participants
+// ---------------------------------------------------------------------------
+
+export const onNewMessage = onDocumentCreated(
+  "conversations/{conversationId}/messages/{messageId}",
+  async (event) => {
+    const messageData = event.data?.data();
+    if (!messageData) return;
+
+    const senderId = messageData.senderId as string;
+    const conversationId = event.params.conversationId;
+
+    // Read conversation to get participants and title.
+    const convoSnap = await db
+      .collection("conversations")
+      .doc(conversationId)
+      .get();
+    if (!convoSnap.exists) return;
+    const convoData = convoSnap.data()!;
+    const participantIds: string[] = convoData.participantIds ?? [];
+    const convoTitle: string = convoData.title ?? "New message";
+
+    // Get sender display name.
+    const senderSnap = await db.collection("users").doc(senderId).get();
+    const senderName: string =
+      senderSnap.data()?.displayName ?? "Someone";
+
+    // Collect FCM tokens for all participants except sender.
+    const recipientIds = participantIds.filter((id) => id !== senderId);
+    if (recipientIds.length === 0) return;
+
+    const tokens: string[] = [];
+    const tokenMap = new Map<string, {userId: string; token: string}>();
+
+    const recipientSnaps = await Promise.all(
+      recipientIds.map((id) => db.collection("users").doc(id).get()),
+    );
+
+    for (const snap of recipientSnaps) {
+      const userData = snap.data();
+      if (!userData?.fcmTokens) continue;
+      for (const token of userData.fcmTokens as string[]) {
+        tokens.push(token);
+        tokenMap.set(token, {userId: snap.id, token});
+      }
+    }
+
+    // Build notification body from message content.
+    const messageText: string =
+      messageData.type === "voice"
+        ? "Voice message"
+        : messageData.type === "image"
+        ? "Photo"
+        : messageData.type === "video"
+        ? "Video"
+        : (messageData.content as string) ?? "";
+
+    const title =
+      participantIds.length > 2 ? `${senderName} in ${convoTitle}` : senderName;
+
+    await sendToTokens(tokens, title, messageText, {
+      type: "message",
+      conversationId,
+      senderId,
+    }, tokenMap);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Trigger: new call (ringing) → notify callee
+// ---------------------------------------------------------------------------
+
+export const onNewCall = onDocumentCreated(
+  {
+    document: "calls/{callId}",
+    secrets: [apnsKeyId, apnsTeamId, apnsSigningKey, apnsBundleId, apnsSandbox],
+  },
+  async (event) => {
+    console.log(`onNewCall: triggered for calls/${event.params.callId}`);
+
+    const callData = event.data?.data();
+    if (!callData) {
+      console.log("onNewCall: no callData, exiting");
+      return;
+    }
+
+    console.log(`onNewCall: status=${callData.status}, callerId=${callData.callerId}, calleeId=${callData.calleeId}`);
+
+    // Only notify for new ringing calls.
+    if (callData.status !== "ringing") {
+      console.log(`onNewCall: status is '${callData.status}', not 'ringing' — skipping`);
+      return;
+    }
+
+    const callerId = callData.callerId as string;
+    const calleeId = callData.calleeId as string;
+    const callId = event.params.callId;
+
+    // Get caller display name.
+    const callerSnap = await db.collection("users").doc(callerId).get();
+    const callerName: string =
+      callerSnap.data()?.displayName ?? "Someone";
+
+    // Get callee data (FCM tokens + VoIP token).
+    const calleeSnap = await db.collection("users").doc(calleeId).get();
+    const calleeData = calleeSnap.data();
+    if (!calleeData) {
+      console.log(`onNewCall: calleeData is null for calleeId=${calleeId}, exiting`);
+      return;
+    }
+
+    const promises: Promise<unknown>[] = [];
+
+    console.log(
+      `onNewCall: callId=${callId}, caller=${callerName} (${callerId}), callee=${calleeId}`,
+    );
+
+    // 1. Send VoIP push via APNs for iOS (reliably wakes terminated app).
+    const voipToken = calleeData.voipToken as string | undefined;
+    console.log(`onNewCall: voipToken=${voipToken ? "present" : "MISSING"}, fcmTokens=${(calleeData.fcmTokens as string[] ?? []).length}`);
+    if (voipToken) {
+      promises.push(
+        sendVoipPush(voipToken, callId, callerId, callerName).catch(
+          async (err) => {
+            const reason = err?.response?.reason ?? err?.reason ?? "unknown";
+            console.error("VoIP push failed:", err);
+            // Clear token only when the device has truly unregistered.
+            // BadDeviceToken can also indicate an environment mismatch
+            // (sandbox vs production) — deleting the token in that case
+            // forces the callee to reopen the app to re-register.
+            if (reason === "Unregistered") {
+              await db.collection("users").doc(calleeId).update({
+                voipToken: FieldValue.delete(),
+              });
+            }
+            if (reason === "InvalidProviderToken") {
+              console.error(
+                "APNs auth failed (InvalidProviderToken). " +
+                "Verify APNS_TEAM_ID, APNS_KEY_ID, and APNS_SIGNING_KEY " +
+                "Firebase secrets for onNewCall.",
+              );
+            }
+          },
+        ),
+      );
+    }
+
+    // 2. Send data-only FCM push for Android (and as fallback for iOS).
+    const rawTokens: unknown[] = calleeData.fcmTokens as unknown[] ?? [];
+    const fcmTokens: string[] = rawTokens.filter(
+      (t): t is string => typeof t === "string",
+    );
+
+    // If the stored array had non-string entries (corrupted data), clean it up.
+    if (fcmTokens.length !== rawTokens.length) {
+      console.log(`Cleaning up corrupted fcmTokens: ${rawTokens.length} raw → ${fcmTokens.length} valid`);
+      promises.push(
+        db.collection("users").doc(calleeId).update({fcmTokens}),
+      );
+    }
+
+    if (fcmTokens.length > 0) {
+      const response = messaging.sendEachForMulticast({
+        tokens: fcmTokens,
+        data: {
+          type: "call",
+          callId,
+          callerId,
+          callerName,
+        },
+        android: {priority: "high"},
+        apns: {
+          payload: {aps: {contentAvailable: true}},
+        },
+      });
+
+      promises.push(
+        response.then(async (resp) => {
+          console.log(`FCM sent: ${resp.successCount} success, ${resp.failureCount} failures`);
+          if (resp.failureCount > 0) {
+            const invalidCodes = new Set([
+              "messaging/invalid-registration-token",
+              "messaging/registration-token-not-registered",
+            ]);
+
+            // Collect valid tokens, excluding invalid ones.
+            const invalidTokens = new Set<string>();
+            resp.responses.forEach((r, idx) => {
+              if (r.error && invalidCodes.has(r.error.code)) {
+                invalidTokens.add(fcmTokens[idx]);
+              }
+            });
+
+            if (invalidTokens.size > 0) {
+              const cleanedTokens = fcmTokens.filter((t) => !invalidTokens.has(t));
+              await db.collection("users").doc(calleeId).update({
+                fcmTokens: cleanedTokens,
+              });
+            }
+          }
+        }),
+      );
+    }
+
+    await Promise.all(promises);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Callable: get short-lived TURN credentials from Cloudflare
+// ---------------------------------------------------------------------------
+
+export const getTurnCredentials = onCall(
+  {secrets: [cfTurnTokenId, cfTurnApiToken]},
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Must be signed in");
+    }
+
+    const resp = await fetch(
+      `https://rtc.live.cloudflare.com/v1/turn/keys/${cfTurnTokenId.value()}/credentials/generate`,
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${cfTurnApiToken.value()}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ttl: 86400}),
+      },
+    );
+
+    if (!resp.ok) {
+      throw new HttpsError("internal", `Cloudflare TURN API error: ${resp.status}`);
+    }
+
+    const data = await resp.json();
+    // Cloudflare returns iceServers as a single object; WebRTC expects an array.
+    const servers = data.iceServers;
+    return Array.isArray(servers) ? servers : [servers];
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Scheduled: clean up stale calls every 2 minutes
+// ---------------------------------------------------------------------------
+
+export const cleanupStaleCalls = onSchedule("every 15 minutes", async () => {
+  const now = Date.now();
+  const ringingCutoff = new Date(now - 60 * 1000); // 60s for ringing
+  const connectedCutoff = new Date(now - 4 * 60 * 60 * 1000); // 4h for connected
+
+  // End stale ringing calls (missed).
+  const staleRinging = await db
+    .collection("calls")
+    .where("status", "==", "ringing")
+    .where("createdAt", "<", ringingCutoff)
+    .limit(50)
+    .get();
+
+  // End stale connected calls (error — likely a crash).
+  const staleConnected = await db
+    .collection("calls")
+    .where("status", "==", "connected")
+    .where("createdAt", "<", connectedCutoff)
+    .limit(50)
+    .get();
+
+  const batch = db.batch();
+  const endedAt = new Date().toISOString();
+
+  for (const doc of staleRinging.docs) {
+    batch.update(doc.ref, {
+      status: "missed",
+      endedAt,
+      endReason: "timeout",
+    });
+  }
+
+  for (const doc of staleConnected.docs) {
+    batch.update(doc.ref, {
+      status: "ended",
+      endedAt,
+      endReason: "error",
+    });
+  }
+
+  if (staleRinging.size + staleConnected.size > 0) {
+    await batch.commit();
+    console.log(
+      `Cleaned up ${staleRinging.size} stale ringing, ${staleConnected.size} stale connected calls`,
+    );
+  }
+});
