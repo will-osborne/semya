@@ -14,14 +14,10 @@ abstract class CallRepository {
   );
   Stream<Call?> watchIncomingCalls(String userId);
 
-  /// Writes a restart offer (created with iceRestart=true) to the call doc.
-  /// The remote peer watches for this and responds with a restart answer.
-  Future<void> setRestartOffer(String callId, Map<String, dynamic> offer);
+  /// Writes a new ICE restart offer from the caller and clears any previous
+  /// restart answer. Only the original caller initiates ICE restarts.
+  Future<void> initiateIceRestart(String callId, Map<String, dynamic> offer);
 
-  /// Writes a restart answer in response to a restart offer.
-  Future<void> setRestartAnswer(String callId, Map<String, dynamic> answer);
-
-  /// Emits `{offer, answer?}` maps as the restart negotiation fields change.
-  /// Emits null when neither field is present.
-  Stream<Map<String, dynamic>?> watchRestartNegotiation(String callId);
+  /// Writes the callee's answer to a pending ICE restart offer.
+  Future<void> acknowledgeIceRestart(String callId, Map<String, dynamic> answer);
 }

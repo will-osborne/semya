@@ -111,10 +111,12 @@ class FirestoreCallRepository implements CallRepository {
   }
 
   @override
-  Future<void> setRestartOffer(
+  Future<void> initiateIceRestart(
     String callId,
     Map<String, dynamic> offer,
   ) async {
+    // Write the new restart offer and clear any stale answer so the callee
+    // knows this is a fresh restart request.
     await _callsCollection.doc(callId).update({
       'restartOffer': offer,
       'restartAnswer': FieldValue.delete(),
@@ -122,26 +124,11 @@ class FirestoreCallRepository implements CallRepository {
   }
 
   @override
-  Future<void> setRestartAnswer(
+  Future<void> acknowledgeIceRestart(
     String callId,
     Map<String, dynamic> answer,
   ) async {
     await _callsCollection.doc(callId).update({'restartAnswer': answer});
-  }
-
-  @override
-  Stream<Map<String, dynamic>?> watchRestartNegotiation(String callId) {
-    return _callsCollection.doc(callId).snapshots().map((doc) {
-      final data = doc.data();
-      if (data == null) return null;
-      final offer = data['restartOffer'];
-      if (offer is! Map) return null;
-      final answer = data['restartAnswer'];
-      return {
-        'offer': Map<String, dynamic>.from(offer),
-        if (answer is Map) 'answer': Map<String, dynamic>.from(answer),
-      };
-    });
   }
 
   Map<String, dynamic> _withId(String id, Map<String, dynamic> data) {
@@ -152,7 +139,6 @@ class FirestoreCallRepository implements CallRepository {
         copy[key] = value.toDate().toIso8601String();
       }
     }
-    // Handle nested candidate createdAt as well.
     return copy;
   }
 }

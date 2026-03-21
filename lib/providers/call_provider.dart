@@ -90,32 +90,53 @@ class CallNotifier extends StateNotifier<CallState> {
   final CallKitService _callKitService;
   final VoiceNoteStopCallback _stopVoicePlayback;
 
+  // ── Subscriptions ──────────────────────────────────────────────────────────
+  // Single call-doc subscription — handles status, signaling, and ICE restart.
   StreamSubscription<Call?>? _callSub;
   StreamSubscription<List<IceCandidate>>? _remoteCandidateSub;
   StreamSubscription<RTCIceCandidate>? _localCandidateSub;
   StreamSubscription<RTCPeerConnectionState>? _connectionStateSub;
   StreamSubscription<bool>? _remoteVideoSub;
-  StreamSubscription<Map<String, dynamic>?>? _restartNegotiationSub;
+
+  // ── Timers ────────────────────────────────────────────────────────────────
   Timer? _ringTimeout;
   Timer? _durationTimer;
   Timer? _disconnectGraceTimer;
 
+  // ── Session state ─────────────────────────────────────────────────────────
   String? _currentUserId;
   String? get currentUserId => _currentUserId;
 
   bool _isCleaningUp = false;
   bool _durationTimerStarted = false;
-  // Guards against concurrent setRemoteDescription calls (TOCTOU fix).
+
+  // Guards concurrent setRemoteDescription calls from overlapping stream events.
+  bool _settingDescription = false;
+
+  // Initial handshake: true once the caller has applied the callee's answer.
   bool _remoteDescriptionSet = false;
-  bool _settingRemoteDescription = false;
-  // Guards against concurrent ICE restart attempts.
-  bool _iceRestarting = false;
+
+  // ── ICE candidate management ──────────────────────────────────────────────
   final Set<String> _processedCandidateIds = {};
+
+  // Remote candidates buffered while setRemoteDescription hasn't completed yet.
   final List<RTCIceCandidate> _pendingRemoteCandidates = [];
 
-  // Serialized queue for local ICE candidate Firestore writes.
+  // Serialised queue for local ICE candidate Firestore writes.
   final List<(String, IceCandidate)> _localCandidateQueue = [];
   bool _processingLocalCandidates = false;
+
+  // ── ICE restart deduplication ─────────────────────────────────────────────
+  // Caller: SDP of the restart offer we wrote, waiting for callee's answer.
+  // Cleared once the answer is applied, or if the restart attempt fails.
+  String? _pendingRestartOfferSdp;
+
+  // Callee: SDP of the last restart offer we fully processed (offer received
+  // → answer written). Prevents re-processing the same offer when unrelated
+  // call-doc fields change and trigger another _onCallUpdate.
+  String? _lastProcessedRestartSdp;
+
+  bool _iceRestarting = false;
 
   static const _uuid = Uuid();
   static const _ringTimeoutDuration = Duration(seconds: 45);
@@ -123,6 +144,708 @@ class CallNotifier extends StateNotifier<CallState> {
   static const _failedGracePeriod = Duration(seconds: 12);
   static const _offerWaitTimeout = Duration(seconds: 30);
   static const _maxWriteAttempts = 3;
+
+  // ---------------------------------------------------------------------------
+  // Public API
+  // ---------------------------------------------------------------------------
+
+  void setCurrentUserId(String userId) {
+    _currentUserId = userId;
+  }
+
+  /// Start an outgoing call.
+  Future<void> initiateCall({
+    required String calleeId,
+    required String conversationId,
+    required String currentUserId,
+  }) async {
+    if (state.activeCall != null || state.isConnecting) return;
+
+    _currentUserId = currentUserId;
+
+    if (!await _ensureMicrophonePermission()) {
+      state = state.copyWith(error: 'Microphone permission required');
+      return;
+    }
+
+    _resetSessionState();
+    state = state.copyWith(isConnecting: true, clearError: true);
+    String? createdCallId;
+
+    try {
+      await _stopVoicePlayback();
+
+      final callId = _uuid.v4();
+      createdCallId = callId;
+
+      final call = Call(
+        id: callId,
+        callerId: currentUserId,
+        calleeId: calleeId,
+        participantIds: [currentUserId, calleeId],
+        conversationId: conversationId,
+        status: CallStatus.ringing,
+        createdAt: DateTime.now(),
+      );
+
+      await _retryWrite(
+        operation: 'createCall',
+        action: () => _callRepository.createCall(call),
+      );
+      state = state.copyWith(activeCall: call);
+
+      // Report the outgoing call to CallKit so it activates the audio session
+      // (triggers didActivateAudioSession in AppDelegate). Without this,
+      // useManualAudio keeps WebRTC audio disabled on iOS.
+      if (Platform.isIOS) {
+        await _callKitService.startCall(callId, calleeId);
+      }
+
+      // Fetch TURN credentials and play dial tone concurrently.
+      final turnFuture = _fetchTurnCredentials();
+      _callSoundService.playDialTone();
+
+      final turnCredentials = await turnFuture;
+      await _webRtcService.initialize(iceServers: turnCredentials);
+
+      // Subscribe to local ICE candidates BEFORE creating the offer so no
+      // candidates are lost from the broadcast stream.
+      _localCandidateSub = _webRtcService.localCandidates.listen((candidate) {
+        _enqueueLocalCandidate(callId, currentUserId, candidate);
+      });
+
+      final offer = await _webRtcService.createOffer();
+      await _retryWrite(
+        operation: 'setOffer',
+        action: () => _callRepository.setOffer(callId, {
+          'sdp': offer.sdp,
+          'type': offer.type,
+        }),
+      );
+
+      // Single call-doc subscription handles status changes, callee's answer,
+      // and ICE restart answers — all via _onCallUpdate.
+      _callSub = _callRepository.watchCall(callId).listen(_onCallUpdate);
+
+      // Watch ICE candidates from the callee. Candidates arriving before the
+      // remote description is set are buffered and flushed in _onCallUpdate.
+      _remoteCandidateSub = _callRepository
+          .watchIceCandidates(callId, calleeId)
+          .listen(_onRemoteCandidates);
+
+      _connectionStateSub = _webRtcService.connectionState.listen(
+        _onConnectionState,
+      );
+      _remoteVideoSub = _webRtcService.remoteVideoStream.listen((hasVideo) {
+        state = state.copyWith(hasRemoteVideo: hasVideo);
+      });
+
+      _ringTimeout = Timer(_ringTimeoutDuration, _onRingTimeout);
+    } on CallSetupException catch (e, st) {
+      dev.log(
+        'initiateCall setup failed: ${e.message}',
+        name: 'CallNotifier',
+        error: e.cause,
+        stackTrace: st,
+      );
+      final callId = createdCallId ?? state.activeCall?.id;
+      if (callId != null) await _endCallWithError(callId);
+      await _cleanup(callId: callId);
+      state = CallState(error: e.message);
+    } catch (e, st) {
+      dev.log(
+        'initiateCall failed: $e',
+        name: 'CallNotifier',
+        error: e,
+        stackTrace: st,
+      );
+      final callId = createdCallId ?? state.activeCall?.id;
+      if (callId != null) await _endCallWithError(callId);
+      await _cleanup(callId: callId);
+      state = const CallState(error: 'Failed to start call');
+    }
+  }
+
+  /// Answer an incoming call.
+  Future<void> answerCall(String callId) async {
+    final uid = _currentUserId;
+    if (uid == null) return;
+    if (state.activeCall != null || state.isConnecting) return;
+
+    if (!await _ensureMicrophonePermission()) {
+      await _endCallWithError(callId);
+      await _cleanup(callId: callId);
+      state = state.copyWith(error: 'Microphone permission required');
+      return;
+    }
+
+    _resetSessionState();
+    state = state.copyWith(isConnecting: true, clearError: true);
+
+    try {
+      await _stopVoicePlayback();
+
+      final turnFuture = _fetchTurnCredentials();
+      if (Platform.isAndroid) {
+        _callSoundService.configureForVoiceCall();
+      }
+
+      final turnCredentials = await turnFuture;
+      await _webRtcService.initialize(iceServers: turnCredentials);
+
+      // Subscribe to local ICE candidates BEFORE creating the answer.
+      _localCandidateSub = _webRtcService.localCandidates.listen((candidate) {
+        _enqueueLocalCandidate(callId, uid, candidate);
+      });
+
+      // Wait for the caller's offer to appear in Firestore.
+      final call = await _callRepository
+          .watchCall(callId)
+          .where((c) => c != null && c.offer != null)
+          .first
+          .timeout(_offerWaitTimeout);
+
+      if (call == null || call.offer == null) {
+        await _endCallWithError(callId);
+        await _cleanup(callId: callId);
+        state = const CallState(error: 'Call not found');
+        return;
+      }
+
+      if (call.status != CallStatus.ringing) {
+        await _cleanup(callId: callId);
+        state = const CallState(error: 'Call no longer available');
+        return;
+      }
+
+      state = state.copyWith(activeCall: call);
+
+      await _webRtcService.setRemoteDescription(
+        RTCSessionDescription(
+          call.offer!['sdp'] as String,
+          call.offer!['type'] as String,
+        ),
+      );
+      _remoteDescriptionSet = true;
+      await _flushPendingCandidates();
+
+      // Subscribe to all streams BEFORE writing to Firestore so that any
+      // status change from the caller (e.g. hang-up) arriving during the
+      // async writes below is not missed.
+      _remoteCandidateSub = _callRepository
+          .watchIceCandidates(callId, call.callerId)
+          .listen(_onRemoteCandidates);
+      _callSub = _callRepository.watchCall(callId).listen(_onCallUpdate);
+      _connectionStateSub = _webRtcService.connectionState.listen(
+        _onConnectionState,
+      );
+      _remoteVideoSub = _webRtcService.remoteVideoStream.listen((hasVideo) {
+        state = state.copyWith(hasRemoteVideo: hasVideo);
+      });
+
+      final answer = await _webRtcService.createAnswer();
+      await _retryWrite(
+        operation: 'setAnswer',
+        action: () => _callRepository.setAnswer(callId, {
+          'sdp': answer.sdp,
+          'type': answer.type,
+        }),
+      );
+      await _retryWrite(
+        operation: 'updateCall(status=connected)',
+        action: () => _callRepository.updateCall(callId, {
+          'status': CallStatus.connected.name,
+        }),
+      );
+    } on TimeoutException {
+      dev.log('answerCall timed out waiting for offer', name: 'CallNotifier');
+      await _endCallWithError(callId);
+      await _cleanup(callId: callId);
+      state = const CallState(error: 'Call timed out');
+    } on CallSetupException catch (e, st) {
+      dev.log(
+        'answerCall setup failed: ${e.message}',
+        name: 'CallNotifier',
+        error: e.cause,
+        stackTrace: st,
+      );
+      await _endCallWithError(callId);
+      await _cleanup(callId: callId);
+      state = CallState(error: e.message);
+    } catch (e, st) {
+      dev.log(
+        'answerCall failed: $e',
+        name: 'CallNotifier',
+        error: e,
+        stackTrace: st,
+      );
+      await _endCallWithError(callId);
+      await _cleanup(callId: callId);
+      state = const CallState(error: 'Failed to answer call');
+    }
+  }
+
+  /// Loads an existing call into state (e.g. when navigating from a
+  /// notification). If still ringing, answers it. If already connected,
+  /// observes it without re-answering.
+  Future<void> joinCall(String callId) async {
+    if (state.activeCall?.id == callId) return;
+    if (state.isConnecting) return;
+
+    final uid = _currentUserId;
+    if (uid == null) return;
+
+    final call = await _callRepository.getCall(callId);
+    if (call == null) {
+      state = state.copyWith(error: 'Call not found');
+      return;
+    }
+
+    if (call.status == CallStatus.ended ||
+        call.status == CallStatus.missed ||
+        call.status == CallStatus.rejected) {
+      state = state.copyWith(error: 'Call already ended');
+      return;
+    }
+
+    if (call.calleeId == uid && call.status == CallStatus.ringing) {
+      await answerCall(callId);
+      return;
+    }
+
+    state = state.copyWith(activeCall: call);
+    _callSub = _callRepository.watchCall(callId).listen(_onCallUpdate);
+  }
+
+  /// Reject an incoming call without answering.
+  Future<void> rejectCall(String callId) async {
+    await _retryWrite(
+      operation: 'updateCall(status=rejected)',
+      action: () => _callRepository.updateCall(callId, {
+        'status': CallStatus.rejected.name,
+        'endedAt': DateTime.now().toIso8601String(),
+        'endReason': CallEndReason.rejected.name,
+      }),
+    );
+  }
+
+  /// Hang up the current call.
+  Future<void> hangUp() async {
+    final call = state.activeCall;
+    if (call != null) {
+      // Cancel listener first to prevent double-cleanup from _onCallUpdate
+      // reacting to the status change we are about to write.
+      await _callSub?.cancel();
+      _callSub = null;
+
+      await _retryWrite(
+        operation: 'updateCall(status=ended)',
+        action: () => _callRepository.updateCall(call.id, {
+          'status': CallStatus.ended.name,
+          'endedAt': DateTime.now().toIso8601String(),
+          'endReason': CallEndReason.hangUp.name,
+        }),
+      );
+    }
+    await _cleanup();
+    state = const CallState();
+  }
+
+  void toggleMute() {
+    _webRtcService.toggleMute();
+    state = state.copyWith(isMuted: _webRtcService.isMuted);
+  }
+
+  void toggleSpeaker() {
+    _webRtcService.toggleSpeaker();
+    state = state.copyWith(isSpeakerOn: _webRtcService.isSpeakerOn);
+  }
+
+  Future<void> toggleVideo() async {
+    final success = await _webRtcService.toggleVideo();
+    if (!success) return;
+
+    state = state.copyWith(
+      isVideoEnabled: _webRtcService.isVideoEnabled,
+      isSpeakerOn: _webRtcService.isSpeakerOn,
+    );
+
+    final call = state.activeCall;
+    if (call != null) {
+      final isCaller = call.callerId == _currentUserId;
+      final field = isCaller ? 'callerVideoEnabled' : 'calleeVideoEnabled';
+      await _retryWrite(
+        operation: 'updateCall(videoState)',
+        action: () => _callRepository.updateCall(call.id, {
+          field: _webRtcService.isVideoEnabled,
+        }),
+      );
+    }
+  }
+
+  Future<void> switchCamera() async {
+    await _webRtcService.switchCamera();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Call-doc event handler (single subscription)
+  // ---------------------------------------------------------------------------
+
+  Future<void> _onCallUpdate(Call? call) async {
+    if (call == null || _isCleaningUp) return;
+
+    final isCaller = call.callerId == _currentUserId;
+    final remoteVideoEnabled = isCaller
+        ? call.calleeVideoEnabled
+        : call.callerVideoEnabled;
+
+    state = state.copyWith(
+      activeCall: call,
+      hasRemoteVideo: remoteVideoEnabled,
+    );
+
+    // ── Initial handshake: caller applies callee's answer ──────────────────
+    if (isCaller &&
+        call.answer != null &&
+        !_remoteDescriptionSet &&
+        !_settingDescription) {
+      _settingDescription = true;
+      try {
+        await _webRtcService.setRemoteDescription(
+          RTCSessionDescription(
+            call.answer!['sdp'] as String,
+            call.answer!['type'] as String,
+          ),
+        );
+        _remoteDescriptionSet = true;
+        await _flushPendingCandidates();
+      } catch (e) {
+        dev.log(
+          'Failed to apply callee answer: $e',
+          name: 'CallNotifier',
+        );
+      } finally {
+        _settingDescription = false;
+      }
+    }
+
+    // ── ICE restart negotiation ────────────────────────────────────────────
+    // Handled entirely within this single subscription, using SDP-based
+    // deduplication to prevent re-processing the same offer/answer when
+    // unrelated call-doc fields change.
+    if (!_settingDescription) {
+      if (isCaller) {
+        // Caller: apply the callee's restart answer — exactly once per
+        // pending restart offer.
+        final restartOfferSdp = call.restartOffer?['sdp'] as String?;
+        if (_pendingRestartOfferSdp != null &&
+            restartOfferSdp == _pendingRestartOfferSdp &&
+            call.restartAnswer != null) {
+          final sentOfferSdp = _pendingRestartOfferSdp!;
+          // Clear immediately to prevent re-entry before the await completes.
+          _pendingRestartOfferSdp = null;
+          _settingDescription = true;
+          try {
+            await _webRtcService.setRemoteDescription(
+              RTCSessionDescription(
+                call.restartAnswer!['sdp'] as String,
+                call.restartAnswer!['type'] as String,
+              ),
+            );
+            await _flushPendingCandidates();
+            dev.log('ICE restart: applied callee answer', name: 'CallNotifier');
+          } catch (e) {
+            dev.log(
+              'ICE restart: failed to apply answer: $e',
+              name: 'CallNotifier',
+            );
+            // Restore so we can retry on the next update.
+            _pendingRestartOfferSdp = sentOfferSdp;
+          } finally {
+            _settingDescription = false;
+          }
+        }
+      } else {
+        // Callee: process the caller's restart offer — once per unique SDP.
+        final restartOfferSdp = call.restartOffer?['sdp'] as String?;
+        if (restartOfferSdp != null &&
+            restartOfferSdp != _lastProcessedRestartSdp) {
+          _lastProcessedRestartSdp = restartOfferSdp;
+          _settingDescription = true;
+          try {
+            await _webRtcService.setRemoteDescription(
+              RTCSessionDescription(
+                call.restartOffer!['sdp'] as String,
+                call.restartOffer!['type'] as String,
+              ),
+            );
+            final answer = await _webRtcService.createAnswer();
+            await _retryWrite(
+              operation: 'acknowledgeIceRestart',
+              action: () => _callRepository.acknowledgeIceRestart(call.id, {
+                'sdp': answer.sdp,
+                'type': answer.type,
+              }),
+            );
+            dev.log(
+              'ICE restart: acknowledged caller offer',
+              name: 'CallNotifier',
+            );
+          } catch (e) {
+            dev.log(
+              'ICE restart: failed to process offer: $e',
+              name: 'CallNotifier',
+            );
+            // Clear so we can retry if the next update brings the same offer.
+            _lastProcessedRestartSdp = null;
+          } finally {
+            _settingDescription = false;
+          }
+        }
+      }
+    }
+
+    // ── Call ended / rejected / missed ────────────────────────────────────
+    if (call.status == CallStatus.ended ||
+        call.status == CallStatus.rejected ||
+        call.status == CallStatus.missed) {
+      await _cleanup();
+      state = const CallState();
+      return;
+    }
+
+    // ── Call connected — configure audio once ─────────────────────────────
+    // Duration timer is NOT started here; it starts when the WebRTC peer
+    // connection reaches Connected state so we only count media-flowing time.
+    if (call.status == CallStatus.connected && !_durationTimerStarted) {
+      _ringTimeout?.cancel();
+      _ringTimeout = null;
+      await _callSoundService.stop();
+      if (Platform.isAndroid) {
+        await _callSoundService.configureForVoiceCall();
+      }
+      await _callKitService.setCallConnected(call.id);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // ICE candidate handling
+  // ---------------------------------------------------------------------------
+
+  void _onRemoteCandidates(List<IceCandidate> candidates) {
+    for (final candidate in candidates) {
+      if (!_processedCandidateIds.add(candidate.id)) continue;
+
+      final rtcCandidate = RTCIceCandidate(
+        candidate.candidate,
+        candidate.sdpMid,
+        candidate.sdpMLineIndex,
+      );
+
+      if (_remoteDescriptionSet) {
+        _addIceCandidateSafe(rtcCandidate);
+      } else {
+        // Buffer until remote description is ready — adding candidates before
+        // setRemoteDescription causes silent WebRTC failures.
+        _pendingRemoteCandidates.add(rtcCandidate);
+      }
+    }
+  }
+
+  Future<void> _flushPendingCandidates() async {
+    for (final candidate in _pendingRemoteCandidates) {
+      await _addIceCandidateSafe(candidate);
+    }
+    _pendingRemoteCandidates.clear();
+  }
+
+  Future<void> _addIceCandidateSafe(RTCIceCandidate candidate) async {
+    try {
+      await _webRtcService.addIceCandidate(candidate);
+    } catch (e) {
+      dev.log('Failed to add ICE candidate: $e', name: 'CallNotifier');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Connection state
+  // ---------------------------------------------------------------------------
+
+  void _onConnectionState(RTCPeerConnectionState connectionState) {
+    if (connectionState ==
+        RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+      _disconnectGraceTimer?.cancel();
+      _disconnectGraceTimer = null;
+      _iceRestarting = false;
+      state = state.copyWith(isConnecting: false);
+
+      if (!_durationTimerStarted) {
+        _durationTimerStarted = true;
+        _startDurationTimer();
+      }
+    }
+
+    if (connectionState ==
+            RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
+        connectionState ==
+            RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+      // Only the original caller initiates ICE restarts (WebRTC requirement:
+      // only the offerer can restart ICE).
+      final call = state.activeCall;
+      if (call != null && call.callerId == _currentUserId && !_iceRestarting) {
+        _iceRestarting = true;
+        unawaited(_attemptIceRestart(call.id));
+      }
+
+      final gracePeriod =
+          connectionState == RTCPeerConnectionState.RTCPeerConnectionStateFailed
+          ? _failedGracePeriod
+          : _disconnectGracePeriod;
+
+      _disconnectGraceTimer?.cancel();
+      _disconnectGraceTimer = Timer(gracePeriod, () {
+        hangUp();
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // ICE restart (caller only)
+  // ---------------------------------------------------------------------------
+
+  Future<void> _attemptIceRestart(String callId) async {
+    if (_isCleaningUp) return;
+    try {
+      dev.log('Attempting ICE restart for $callId', name: 'CallNotifier');
+      final offer = await _webRtcService.createRestartOffer();
+
+      // Track the SDP we sent so _onCallUpdate can match the callee's answer
+      // to this specific restart attempt and not re-process it on later updates.
+      _pendingRestartOfferSdp = offer.sdp;
+
+      await _retryWrite(
+        operation: 'initiateIceRestart',
+        action: () => _callRepository.initiateIceRestart(callId, {
+          'sdp': offer.sdp,
+          'type': offer.type,
+        }),
+      );
+    } catch (e) {
+      dev.log('ICE restart failed: $e', name: 'CallNotifier');
+      _pendingRestartOfferSdp = null;
+      _iceRestarting = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Local ICE candidate serialised queue
+  // ---------------------------------------------------------------------------
+
+  void _enqueueLocalCandidate(
+    String callId,
+    String fromUserId,
+    RTCIceCandidate candidate,
+  ) {
+    final candidateValue = candidate.candidate;
+    final sdpMid = candidate.sdpMid;
+    final sdpMLineIndex = candidate.sdpMLineIndex;
+
+    if (candidateValue == null ||
+        candidateValue.isEmpty ||
+        sdpMid == null ||
+        sdpMLineIndex == null) {
+      dev.log(
+        'Skipping local ICE candidate with missing fields',
+        name: 'CallNotifier',
+      );
+      return;
+    }
+
+    _localCandidateQueue.add((
+      callId,
+      IceCandidate(
+        id: _uuid.v4(),
+        candidate: candidateValue,
+        sdpMid: sdpMid,
+        sdpMLineIndex: sdpMLineIndex,
+        fromUserId: fromUserId,
+        createdAt: DateTime.now(),
+      ),
+    ));
+
+    _drainLocalCandidateQueue();
+  }
+
+  void _drainLocalCandidateQueue() {
+    if (_processingLocalCandidates) return;
+    _processingLocalCandidates = true;
+    _processCandidateQueueLoop()
+        .catchError((Object e) {
+          dev.log('Candidate queue error: $e', name: 'CallNotifier');
+        })
+        .whenComplete(() {
+          _processingLocalCandidates = false;
+          if (_localCandidateQueue.isNotEmpty && !_isCleaningUp) {
+            _drainLocalCandidateQueue();
+          }
+        });
+  }
+
+  Future<void> _processCandidateQueueLoop() async {
+    while (_localCandidateQueue.isNotEmpty) {
+      if (_isCleaningUp) {
+        _localCandidateQueue.clear();
+        return;
+      }
+      final entry = _localCandidateQueue.removeAt(0);
+      try {
+        await _retryWrite(
+          operation: 'addIceCandidate',
+          action: () => _callRepository.addIceCandidate(entry.$1, entry.$2),
+        );
+      } catch (e) {
+        dev.log('ICE candidate write failed: $e', name: 'CallNotifier');
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Ring timeout
+  // ---------------------------------------------------------------------------
+
+  Future<void> _onRingTimeout() async {
+    if (_isCleaningUp) return;
+    final call = state.activeCall;
+    if (call != null && call.status == CallStatus.ringing) {
+      await _retryWrite(
+        operation: 'updateCall(status=missed)',
+        action: () => _callRepository.updateCall(call.id, {
+          'status': CallStatus.missed.name,
+          'endedAt': DateTime.now().toIso8601String(),
+          'endReason': CallEndReason.timeout.name,
+        }),
+      );
+      await _cleanup();
+      state = const CallState();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Duration timer
+  // ---------------------------------------------------------------------------
+
+  void _startDurationTimer() {
+    _durationTimer?.cancel();
+    _durationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      state = state.copyWith(
+        callDuration: state.callDuration + const Duration(seconds: 1),
+      );
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
 
   Future<void> _endCallWithError(
     String callId, {
@@ -136,7 +859,6 @@ class CallNotifier extends StateNotifier<CallState> {
           call.status == CallStatus.rejected) {
         return;
       }
-
       await _retryWrite(
         operation: 'updateCall(status=ended,error)',
         action: () => _callRepository.updateCall(callId, {
@@ -147,7 +869,7 @@ class CallNotifier extends StateNotifier<CallState> {
       );
     } catch (e, st) {
       dev.log(
-        'Failed to propagate call failure for $callId: $e',
+        'Failed to propagate call error for $callId: $e',
         name: 'CallNotifier',
         error: e,
         stackTrace: st,
@@ -155,21 +877,16 @@ class CallNotifier extends StateNotifier<CallState> {
     }
   }
 
-  /// Ensures microphone and camera permissions are granted before starting
-  /// WebRTC. Returns true if microphone is granted (camera is optional —
-  /// calls work audio-only if camera is denied).
-  /// On iOS, we skip the permission_handler check because CallKit manages
-  /// the audio session and getUserMedia requests permission natively.
+  /// Ensures microphone permission before starting WebRTC. Camera is optional.
+  /// On iOS, CallKit manages the audio session so we skip the permission check.
   Future<bool> _ensureMicrophonePermission() async {
     if (Platform.isIOS) return true;
     final statuses = await [Permission.microphone, Permission.camera].request();
-    // Microphone is required; camera is nice-to-have (WebRTC falls back
-    // to audio-only if camera permission is denied).
     return statuses[Permission.microphone]?.isGranted ?? false;
   }
 
-  /// Fetches short-lived TURN credentials from Cloudflare via Cloud Function.
-  /// Throws if credentials cannot be fetched — TURN is mandatory for reliability.
+  /// Fetches short-lived TURN credentials via Cloud Function.
+  /// Throws [CallSetupException] if credentials cannot be obtained.
   Future<List<Map<String, dynamic>>> _fetchTurnCredentials() async {
     Object? lastError;
 
@@ -185,9 +902,7 @@ class CallNotifier extends StateNotifier<CallState> {
             .map((s) => Map<String, dynamic>.from(s))
             .toList();
 
-        if (parsed.isEmpty) {
-          throw StateError('TURN credentials response is empty');
-        }
+        if (parsed.isEmpty) throw StateError('TURN response is empty');
         return parsed;
       } catch (e) {
         lastError = e;
@@ -230,715 +945,16 @@ class CallNotifier extends StateNotifier<CallState> {
     throw StateError('$operation failed after retries: $lastError');
   }
 
-  /// Start an outgoing call.
-  Future<void> initiateCall({
-    required String calleeId,
-    required String conversationId,
-    required String currentUserId,
-  }) async {
-    // Guard: don't start a new call while one is active or connecting.
-    if (state.activeCall != null || state.isConnecting) return;
-
-    _currentUserId = currentUserId;
-
-    // Request microphone permission before setting up WebRTC.
-    if (!await _ensureMicrophonePermission()) {
-      state = state.copyWith(error: 'Microphone permission required');
-      return;
-    }
-
+  void _resetSessionState() {
     _isCleaningUp = false;
     _durationTimerStarted = false;
     _remoteDescriptionSet = false;
+    _settingDescription = false;
+    _iceRestarting = false;
+    _pendingRestartOfferSdp = null;
+    _lastProcessedRestartSdp = null;
     _processedCandidateIds.clear();
     _pendingRemoteCandidates.clear();
-    state = state.copyWith(isConnecting: true, clearError: true);
-    String? createdCallId;
-
-    try {
-      // Stop any voice note playback.
-      await _stopVoicePlayback();
-
-      final callId = _uuid.v4();
-      createdCallId = callId;
-      final call = Call(
-        id: callId,
-        callerId: currentUserId,
-        calleeId: calleeId,
-        participantIds: [currentUserId, calleeId],
-        conversationId: conversationId,
-        status: CallStatus.ringing,
-        createdAt: DateTime.now(),
-      );
-
-      await _retryWrite(
-        operation: 'createCall',
-        action: () => _callRepository.createCall(call),
-      );
-      state = state.copyWith(activeCall: call);
-
-      // On iOS, report the outgoing call to CallKit so it activates the
-      // audio session (triggers didActivateAudioSession in AppDelegate).
-      // Without this, useManualAudio keeps WebRTC audio disabled.
-      if (Platform.isIOS) {
-        await _callKitService.startCall(callId, calleeId);
-      }
-
-      // Fetch TURN credentials in parallel with dial tone setup.
-      final turnFuture = _fetchTurnCredentials();
-      _callSoundService.playDialTone(); // fire-and-forget; non-critical
-
-      final turnCredentials = await turnFuture;
-
-      // Initialize WebRTC with TURN credentials.
-      await _webRtcService.initialize(iceServers: turnCredentials);
-
-      // Listen for local ICE candidates BEFORE creating offer so none are
-      // lost from the broadcast stream.
-      _localCandidateSub = _webRtcService.localCandidates.listen((candidate) {
-        _enqueueLocalCandidate(callId, currentUserId, candidate);
-      });
-
-      // Create and send offer.
-      final offer = await _webRtcService.createOffer();
-      await _retryWrite(
-        operation: 'setOffer',
-        action: () => _callRepository.setOffer(callId, {
-          'sdp': offer.sdp,
-          'type': offer.type,
-        }),
-      );
-
-      // Watch call doc for answer / status changes.
-      _callSub = _callRepository.watchCall(callId).listen(_onCallUpdate);
-
-      // Watch remote ICE candidates from callee. Candidates that arrive
-      // before the remote description is set will be buffered and flushed
-      // once setRemoteDescription completes in _onCallUpdate.
-      _remoteCandidateSub = _callRepository
-          .watchIceCandidates(callId, calleeId)
-          .listen(_onRemoteCandidates);
-
-      // Listen for WebRTC connection state.
-      _connectionStateSub = _webRtcService.connectionState.listen(
-        _onConnectionState,
-      );
-
-      // Listen for remote video track changes.
-      _remoteVideoSub = _webRtcService.remoteVideoStream.listen((hasVideo) {
-        state = state.copyWith(hasRemoteVideo: hasVideo);
-      });
-
-      // Caller watches for ICE restart answers from the callee.
-      _restartNegotiationSub = _callRepository
-          .watchRestartNegotiation(callId)
-          .listen((data) => _onRestartNegotiation(callId, data));
-
-      // Start ring timeout.
-      _ringTimeout = Timer(_ringTimeoutDuration, _onRingTimeout);
-    } on CallSetupException catch (e, st) {
-      dev.log(
-        'initiateCall setup failed: ${e.message}',
-        name: 'CallNotifier',
-        error: e.cause,
-        stackTrace: st,
-      );
-      final callId = createdCallId ?? state.activeCall?.id;
-      if (callId != null) {
-        await _endCallWithError(callId);
-      }
-      await _cleanup(callId: callId);
-      state = CallState(error: e.message);
-    } catch (e, st) {
-      dev.log(
-        'initiateCall failed: $e',
-        name: 'CallNotifier',
-        error: e,
-        stackTrace: st,
-      );
-      final callId = createdCallId ?? state.activeCall?.id;
-      if (callId != null) {
-        await _endCallWithError(callId);
-      }
-      await _cleanup(callId: callId);
-      state = const CallState(error: 'Failed to start call');
-    }
-  }
-
-  /// Answer an incoming call.
-  Future<void> answerCall(String callId) async {
-    final uid = _currentUserId;
-    if (uid == null) return;
-
-    // Guard: don't answer while already in a call or already connecting.
-    // This prevents a race condition where both _handleAcceptedCall and
-    // CallScreen.build trigger concurrent joinCall → answerCall calls.
-    if (state.activeCall != null || state.isConnecting) return;
-
-    // Request microphone permission before setting up WebRTC.
-    if (!await _ensureMicrophonePermission()) {
-      await _endCallWithError(callId);
-      await _cleanup(callId: callId);
-      state = state.copyWith(error: 'Microphone permission required');
-      return;
-    }
-
-    _isCleaningUp = false;
-    _durationTimerStarted = false;
-    _remoteDescriptionSet = false;
-    _processedCandidateIds.clear();
-    _pendingRemoteCandidates.clear();
-    state = state.copyWith(isConnecting: true, clearError: true);
-
-    try {
-      // Stop any voice note playback.
-      await _stopVoicePlayback();
-
-      // Kick off TURN credentials fetch and audio config in parallel.
-      final turnFuture = _fetchTurnCredentials();
-      if (Platform.isAndroid) {
-        _callSoundService.configureForVoiceCall(); // fire-and-forget
-      }
-
-      final turnCredentials = await turnFuture;
-
-      // Initialize WebRTC with TURN credentials.
-      await _webRtcService.initialize(iceServers: turnCredentials);
-
-      // Listen for local ICE candidates BEFORE creating answer so none are
-      // lost from the broadcast stream.
-      _localCandidateSub = _webRtcService.localCandidates.listen((candidate) {
-        _enqueueLocalCandidate(callId, uid, candidate);
-      });
-
-      // Watch the call doc to get the offer, with a timeout.
-      final callStream = _callRepository.watchCall(callId);
-      final call = await callStream
-          .where((c) => c != null && c.offer != null)
-          .first
-          .timeout(_offerWaitTimeout);
-
-      if (call == null || call.offer == null) {
-        await _endCallWithError(callId);
-        await _cleanup(callId: callId);
-        state = const CallState(error: 'Call not found');
-        return;
-      }
-
-      // Verify the call is still ringing before proceeding.
-      if (call.status != CallStatus.ringing) {
-        await _cleanup(callId: callId);
-        state = const CallState(error: 'Call no longer available');
-        return;
-      }
-
-      state = state.copyWith(activeCall: call);
-
-      // Set remote description (the offer).
-      await _webRtcService.setRemoteDescription(
-        RTCSessionDescription(
-          call.offer!['sdp'] as String,
-          call.offer!['type'] as String,
-        ),
-      );
-      _remoteDescriptionSet = true;
-      await _flushPendingCandidates();
-
-      // Subscribe to all streams BEFORE writing to Firestore so that any
-      // status change from the caller (e.g. hangup) arriving during the
-      // async writes below is not missed (Issue 8 fix).
-      _remoteCandidateSub = _callRepository
-          .watchIceCandidates(callId, call.callerId)
-          .listen(_onRemoteCandidates);
-      _callSub = _callRepository.watchCall(callId).listen(_onCallUpdate);
-      _connectionStateSub = _webRtcService.connectionState.listen(
-        _onConnectionState,
-      );
-      _remoteVideoSub = _webRtcService.remoteVideoStream.listen((hasVideo) {
-        state = state.copyWith(hasRemoteVideo: hasVideo);
-      });
-      // Callee watches for ICE restart offers from the caller.
-      _restartNegotiationSub = _callRepository
-          .watchRestartNegotiation(callId)
-          .listen((data) => _onRestartNegotiation(callId, data));
-
-      // Create and send answer.
-      final answer = await _webRtcService.createAnswer();
-      await _retryWrite(
-        operation: 'setAnswer',
-        action: () => _callRepository.setAnswer(callId, {
-          'sdp': answer.sdp,
-          'type': answer.type,
-        }),
-      );
-
-      // Update status to connected (signals to the caller that we answered).
-      await _retryWrite(
-        operation: 'updateCall(status=connected)',
-        action: () => _callRepository.updateCall(callId, {
-          'status': CallStatus.connected.name,
-        }),
-      );
-    } on TimeoutException {
-      dev.log('answerCall timed out waiting for offer', name: 'CallNotifier');
-      await _endCallWithError(callId);
-      await _cleanup(callId: callId);
-      state = const CallState(error: 'Call timed out');
-    } on CallSetupException catch (e, st) {
-      dev.log(
-        'answerCall setup failed: ${e.message}',
-        name: 'CallNotifier',
-        error: e.cause,
-        stackTrace: st,
-      );
-      await _endCallWithError(callId);
-      await _cleanup(callId: callId);
-      state = CallState(error: e.message);
-    } catch (e, st) {
-      dev.log(
-        'answerCall failed: $e',
-        name: 'CallNotifier',
-        error: e,
-        stackTrace: st,
-      );
-      await _endCallWithError(callId);
-      await _cleanup(callId: callId);
-      state = const CallState(error: 'Failed to answer call');
-    }
-  }
-
-  /// Loads an existing call into state (e.g. when navigating from a notification).
-  /// If the call is still ringing, it answers it. If already connected, it
-  /// joins the existing session.
-  Future<void> joinCall(String callId) async {
-    // Already tracking this call.
-    if (state.activeCall?.id == callId) return;
-
-    // Guard: don't join while already connecting another call.
-    if (state.isConnecting) return;
-
-    final uid = _currentUserId;
-    if (uid == null) return;
-
-    final call = await _callRepository.getCall(callId);
-    if (call == null) {
-      state = state.copyWith(error: 'Call not found');
-      return;
-    }
-
-    // Call already ended.
-    if (call.status == CallStatus.ended ||
-        call.status == CallStatus.missed ||
-        call.status == CallStatus.rejected) {
-      state = state.copyWith(error: 'Call already ended');
-      return;
-    }
-
-    // If we're the callee and the call is still ringing, answer it. Calls that
-    // are already connected should be observed, not re-answered, otherwise we
-    // can overwrite signaling state and desynchronize the caller.
-    if (call.calleeId == uid && call.status == CallStatus.ringing) {
-      await answerCall(callId);
-      return;
-    }
-
-    // Otherwise just set it as active and watch for updates.
-    state = state.copyWith(activeCall: call);
-    _callSub = _callRepository.watchCall(callId).listen(_onCallUpdate);
-  }
-
-  /// Reject an incoming call.
-  Future<void> rejectCall(String callId) async {
-    await _retryWrite(
-      operation: 'updateCall(status=rejected)',
-      action: () => _callRepository.updateCall(callId, {
-        'status': CallStatus.rejected.name,
-        'endedAt': DateTime.now().toIso8601String(),
-        'endReason': CallEndReason.rejected.name,
-      }),
-    );
-  }
-
-  /// Hang up the current call.
-  Future<void> hangUp() async {
-    final call = state.activeCall;
-    if (call != null) {
-      // Cancel Firestore listener first to avoid double-cleanup from
-      // _onCallUpdate seeing the status change we're about to write.
-      await _callSub?.cancel();
-      _callSub = null;
-
-      await _retryWrite(
-        operation: 'updateCall(status=ended)',
-        action: () => _callRepository.updateCall(call.id, {
-          'status': CallStatus.ended.name,
-          'endedAt': DateTime.now().toIso8601String(),
-          'endReason': CallEndReason.hangUp.name,
-        }),
-      );
-    }
-    await _cleanup();
-    state = const CallState();
-  }
-
-  void toggleMute() {
-    _webRtcService.toggleMute();
-    state = state.copyWith(isMuted: _webRtcService.isMuted);
-  }
-
-  void toggleSpeaker() {
-    _webRtcService.toggleSpeaker();
-    state = state.copyWith(isSpeakerOn: _webRtcService.isSpeakerOn);
-  }
-
-  Future<void> toggleVideo() async {
-    final success = await _webRtcService.toggleVideo();
-    if (!success) return;
-
-    state = state.copyWith(
-      isVideoEnabled: _webRtcService.isVideoEnabled,
-      isSpeakerOn: _webRtcService.isSpeakerOn,
-    );
-
-    // Signal video state to the remote peer via Firestore.
-    final call = state.activeCall;
-    if (call != null) {
-      final isCaller = call.callerId == _currentUserId;
-      final field = isCaller ? 'callerVideoEnabled' : 'calleeVideoEnabled';
-      await _retryWrite(
-        operation: 'updateCall(videoState)',
-        action: () => _callRepository.updateCall(call.id, {
-          field: _webRtcService.isVideoEnabled,
-        }),
-      );
-    }
-  }
-
-  Future<void> switchCamera() async {
-    await _webRtcService.switchCamera();
-  }
-
-  /// Set the current user ID (called when the provider is first read).
-  void setCurrentUserId(String userId) {
-    _currentUserId = userId;
-  }
-
-  Future<void> _onCallUpdate(Call? call) async {
-    if (call == null || _isCleaningUp) return;
-
-    // Determine if the remote peer has video enabled.
-    final isCaller = call.callerId == _currentUserId;
-    final remoteVideoEnabled = isCaller
-        ? call.calleeVideoEnabled
-        : call.callerVideoEnabled;
-
-    state = state.copyWith(
-      activeCall: call,
-      hasRemoteVideo: remoteVideoEnabled,
-    );
-
-    // Guard against concurrent setRemoteDescription calls: check AND set
-    // the in-progress flag synchronously before any await (Issue 1 fix).
-    if (call.answer != null &&
-        call.callerId == _currentUserId &&
-        !_remoteDescriptionSet &&
-        !_settingRemoteDescription) {
-      _settingRemoteDescription = true;
-      try {
-        await _webRtcService.setRemoteDescription(
-          RTCSessionDescription(
-            call.answer!['sdp'] as String,
-            call.answer!['type'] as String,
-          ),
-        );
-        _remoteDescriptionSet = true;
-        await _flushPendingCandidates();
-      } finally {
-        _settingRemoteDescription = false;
-      }
-    }
-
-    // If the call is connected (callee answered), configure audio/CallKit once.
-    // The duration timer is NOT started here — it starts when the WebRTC
-    // peer connection actually reaches Connected state, ensuring we only
-    // count time when media is flowing (Issue 5 fix).
-    if (call.status == CallStatus.connected && !_durationTimerStarted) {
-      _ringTimeout?.cancel();
-      await _callSoundService.stop();
-
-      // On Android, reconfigure audio session for voice call.
-      // On iOS, CallKit manages the audio session.
-      if (Platform.isAndroid) {
-        await _callSoundService.configureForVoiceCall();
-      }
-
-      await _callKitService.setCallConnected(call.id);
-    }
-
-    // Call ended/rejected/missed by the other party.
-    if (call.status == CallStatus.ended ||
-        call.status == CallStatus.rejected ||
-        call.status == CallStatus.missed) {
-      await _cleanup();
-      state = const CallState();
-    }
-  }
-
-  void _onRemoteCandidates(List<IceCandidate> candidates) {
-    for (final candidate in candidates) {
-      // Skip already-processed candidates.
-      if (!_processedCandidateIds.add(candidate.id)) continue;
-
-      final rtcCandidate = RTCIceCandidate(
-        candidate.candidate,
-        candidate.sdpMid,
-        candidate.sdpMLineIndex,
-      );
-
-      if (_remoteDescriptionSet) {
-        _addIceCandidateSafe(rtcCandidate);
-      } else {
-        // Buffer until remote description is set — adding candidates
-        // before setRemoteDescription causes silent WebRTC failures.
-        _pendingRemoteCandidates.add(rtcCandidate);
-      }
-    }
-  }
-
-  Future<void> _flushPendingCandidates() async {
-    for (final candidate in _pendingRemoteCandidates) {
-      await _addIceCandidateSafe(candidate);
-    }
-    _pendingRemoteCandidates.clear();
-  }
-
-  Future<void> _addIceCandidateSafe(RTCIceCandidate candidate) async {
-    try {
-      await _webRtcService.addIceCandidate(candidate);
-    } catch (e) {
-      dev.log('Failed to add ICE candidate: $e', name: 'CallNotifier');
-    }
-  }
-
-  void _onConnectionState(RTCPeerConnectionState connectionState) {
-    if (connectionState ==
-        RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
-      _disconnectGraceTimer?.cancel();
-      _disconnectGraceTimer = null;
-      _iceRestarting = false;
-      state = state.copyWith(isConnecting: false);
-
-      // Start duration timer only once media is actually flowing (Issue 5 fix).
-      if (!_durationTimerStarted) {
-        _durationTimerStarted = true;
-        _startDurationTimer();
-      }
-    }
-
-    if (connectionState ==
-            RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
-        connectionState ==
-            RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
-      // Attempt ICE restart if we are the original caller and not already
-      // restarting. ICE restart re-gathers candidates over the new network
-      // path without tearing down the call (Issue 3 fix).
-      final call = state.activeCall;
-      if (call != null && call.callerId == _currentUserId && !_iceRestarting) {
-        _iceRestarting = true;
-        unawaited(_attemptIceRestart(call.id));
-      }
-
-      // Grace timer: hang up if the connection doesn't recover in time.
-      _disconnectGraceTimer?.cancel();
-      final gracePeriod =
-          connectionState == RTCPeerConnectionState.RTCPeerConnectionStateFailed
-          ? _failedGracePeriod
-          : _disconnectGracePeriod;
-      _disconnectGraceTimer = Timer(gracePeriod, () {
-        hangUp();
-      });
-    }
-  }
-
-  /// Initiates ICE restart as the caller: creates a new offer with
-  /// iceRestart=true, writes it to Firestore, and waits for the callee's
-  /// restart answer via [_onRestartNegotiation].
-  Future<void> _attemptIceRestart(String callId) async {
-    if (_isCleaningUp) return;
-    try {
-      dev.log('Attempting ICE restart for call $callId', name: 'CallNotifier');
-      final offer = await _webRtcService.createRestartOffer();
-      await _retryWrite(
-        operation: 'setRestartOffer',
-        action: () => _callRepository.setRestartOffer(callId, {
-          'sdp': offer.sdp,
-          'type': offer.type,
-        }),
-      );
-    } catch (e) {
-      dev.log('ICE restart offer failed: $e', name: 'CallNotifier');
-      _iceRestarting = false;
-    }
-  }
-
-  /// Handles incoming restart negotiation updates from Firestore.
-  ///
-  /// - As the callee: when a restart offer arrives, creates and writes a
-  ///   restart answer.
-  /// - As the caller: when a restart answer arrives (after writing the offer),
-  ///   sets it as the remote description to complete the restart.
-  Future<void> _onRestartNegotiation(
-    String callId,
-    Map<String, dynamic>? data,
-  ) async {
-    if (data == null || _isCleaningUp) return;
-    final offer = data['offer'] as Map<String, dynamic>?;
-    final answer = data['answer'] as Map<String, dynamic>?;
-    if (offer == null) return;
-
-    final isCaller = state.activeCall?.callerId == _currentUserId;
-
-    if (isCaller) {
-      // Caller: set the callee's restart answer as remote description.
-      if (answer == null || _settingRemoteDescription) return;
-      _settingRemoteDescription = true;
-      try {
-        await _webRtcService.setRemoteDescription(
-          RTCSessionDescription(
-            answer['sdp'] as String,
-            answer['type'] as String,
-          ),
-        );
-        dev.log('ICE restart: set restart answer', name: 'CallNotifier');
-      } catch (e) {
-        dev.log('ICE restart: failed to set answer: $e', name: 'CallNotifier');
-      } finally {
-        _settingRemoteDescription = false;
-      }
-    } else {
-      // Callee: respond to the caller's restart offer with a new answer.
-      if (_settingRemoteDescription) return;
-      _settingRemoteDescription = true;
-      try {
-        await _webRtcService.setRemoteDescription(
-          RTCSessionDescription(
-            offer['sdp'] as String,
-            offer['type'] as String,
-          ),
-        );
-        final restartAnswer = await _webRtcService.createAnswer();
-        await _retryWrite(
-          operation: 'setRestartAnswer',
-          action: () => _callRepository.setRestartAnswer(callId, {
-            'sdp': restartAnswer.sdp,
-            'type': restartAnswer.type,
-          }),
-        );
-        dev.log('ICE restart: sent restart answer', name: 'CallNotifier');
-      } catch (e) {
-        dev.log('ICE restart: failed to send answer: $e', name: 'CallNotifier');
-      } finally {
-        _settingRemoteDescription = false;
-      }
-    }
-  }
-
-  void _onRingTimeout() async {
-    if (_isCleaningUp) return;
-    final call = state.activeCall;
-    if (call != null && call.status == CallStatus.ringing) {
-      await _retryWrite(
-        operation: 'updateCall(status=missed)',
-        action: () => _callRepository.updateCall(call.id, {
-          'status': CallStatus.missed.name,
-          'endedAt': DateTime.now().toIso8601String(),
-          'endReason': CallEndReason.timeout.name,
-        }),
-      );
-      await _cleanup();
-      state = const CallState();
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Local ICE candidate queue (Issue 2 fix)
-  // ---------------------------------------------------------------------------
-
-  /// Enqueues a local ICE candidate for serialized Firestore writing.
-  /// The listener callback is kept synchronous; writing is done by the drain.
-  void _enqueueLocalCandidate(
-    String callId,
-    String fromUserId,
-    RTCIceCandidate candidate,
-  ) {
-    final candidateValue = candidate.candidate;
-    final sdpMid = candidate.sdpMid;
-    final sdpMLineIndex = candidate.sdpMLineIndex;
-    if (candidateValue == null ||
-        candidateValue.isEmpty ||
-        sdpMid == null ||
-        sdpMLineIndex == null) {
-      dev.log(
-        'Skipping local ICE candidate with missing fields',
-        name: 'CallNotifier',
-      );
-      return;
-    }
-    final iceCandidate = IceCandidate(
-      id: _uuid.v4(),
-      candidate: candidateValue,
-      sdpMid: sdpMid,
-      sdpMLineIndex: sdpMLineIndex,
-      fromUserId: fromUserId,
-      createdAt: DateTime.now(),
-    );
-    _localCandidateQueue.add((callId, iceCandidate));
-    _drainLocalCandidateQueue();
-  }
-
-  void _drainLocalCandidateQueue() {
-    if (_processingLocalCandidates) return;
-    _processingLocalCandidates = true;
-    _processCandidateQueueLoop()
-        .catchError((Object e) {
-          dev.log('Candidate queue error: $e', name: 'CallNotifier');
-        })
-        .whenComplete(() {
-          _processingLocalCandidates = false;
-          // Re-drain if items were added while the loop was running.
-          if (_localCandidateQueue.isNotEmpty && !_isCleaningUp) {
-            _drainLocalCandidateQueue();
-          }
-        });
-  }
-
-  Future<void> _processCandidateQueueLoop() async {
-    while (_localCandidateQueue.isNotEmpty) {
-      if (_isCleaningUp) {
-        _localCandidateQueue.clear();
-        return;
-      }
-      final entry = _localCandidateQueue.removeAt(0);
-      try {
-        await _retryWrite(
-          operation: 'addIceCandidate',
-          action: () => _callRepository.addIceCandidate(entry.$1, entry.$2),
-        );
-      } catch (e) {
-        dev.log('ICE candidate write failed: $e', name: 'CallNotifier');
-      }
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-
-  void _startDurationTimer() {
-    _durationTimer?.cancel();
-    _durationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      state = state.copyWith(
-        callDuration: state.callDuration + const Duration(seconds: 1),
-      );
-    });
   }
 
   Future<void> _cleanup({String? callId}) async {
@@ -950,13 +966,16 @@ class CallNotifier extends StateNotifier<CallState> {
       if (activeCallId != null) {
         await _callKitService.endCall(activeCallId);
       }
+
       await _callSoundService.stop();
+
       _ringTimeout?.cancel();
       _ringTimeout = null;
       _durationTimer?.cancel();
       _durationTimer = null;
       _disconnectGraceTimer?.cancel();
       _disconnectGraceTimer = null;
+
       await _callSub?.cancel();
       _callSub = null;
       await _remoteCandidateSub?.cancel();
@@ -967,14 +986,17 @@ class CallNotifier extends StateNotifier<CallState> {
       _connectionStateSub = null;
       await _remoteVideoSub?.cancel();
       _remoteVideoSub = null;
-      await _restartNegotiationSub?.cancel();
-      _restartNegotiationSub = null;
+
       _localCandidateQueue.clear();
       _processedCandidateIds.clear();
       _pendingRemoteCandidates.clear();
+
       _remoteDescriptionSet = false;
-      _settingRemoteDescription = false;
+      _settingDescription = false;
       _iceRestarting = false;
+      _pendingRestartOfferSdp = null;
+      _lastProcessedRestartSdp = null;
+
       await _webRtcService.dispose();
     } finally {
       _isCleaningUp = false;
@@ -988,6 +1010,10 @@ class CallNotifier extends StateNotifier<CallState> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Exceptions
+// ---------------------------------------------------------------------------
+
 class CallSetupException implements Exception {
   const CallSetupException(this.message, [this.cause]);
 
@@ -996,7 +1022,7 @@ class CallSetupException implements Exception {
 }
 
 // ---------------------------------------------------------------------------
-// Callback type for stopping voice playback
+// Callback type
 // ---------------------------------------------------------------------------
 
 typedef VoiceNoteStopCallback = Future<void> Function();
