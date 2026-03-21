@@ -67,7 +67,11 @@ class VoiceNoteService {
     final tempPlayer = AudioPlayer();
     Duration? recordedDuration;
     try {
+      // On iOS this probe can fail for some freshly-recorded files depending on
+      // the active AVAudioSession state. Upload should still proceed.
       recordedDuration = await tempPlayer.setFilePath(path);
+    } catch (_) {
+      recordedDuration = null;
     } finally {
       await tempPlayer.dispose();
     }

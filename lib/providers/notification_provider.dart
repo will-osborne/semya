@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:developer' as dev;
 
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -279,7 +280,12 @@ class NotificationNotifier extends StateNotifier<NotificationState> {
 
     final router = _ref.read(routerProvider);
     state = state.copyWith(clearPendingRoutePath: true);
-    router.push(path);
+    // Defer to the next frame so the push happens after GoRouter has finished
+    // its initial redirect cycle. Calling push() during the first build can
+    // silently lose the navigation when the router is still settling.
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      router.push(path);
+    });
   }
 
   Future<void> flushPendingNavigation() async {

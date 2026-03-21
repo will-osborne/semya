@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../ui/screens/auth/link_email_password_screen.dart';
 import '../ui/screens/auth/phone_input_screen.dart';
-import '../ui/screens/auth/otp_screen.dart';
 import '../ui/screens/auth/profile_setup_screen.dart';
+import '../ui/screens/auth/sms_migration_otp_screen.dart';
+import '../ui/screens/auth/sms_migration_phone_screen.dart';
 import '../ui/screens/home/home_screen.dart';
 import '../ui/screens/chat/chat_screen.dart';
 import '../ui/screens/settings/settings_screen.dart';
@@ -17,7 +19,9 @@ class AppRoutes {
   AppRoutes._();
 
   static const String login = '/login';
-  static const String otp = '/otp';
+  static const String smsMigrationPhone = '/migrate-sms';
+  static const String smsMigrationOtp = '/migrate-sms-otp';
+  static const String linkEmailPassword = '/link-email-password';
   static const String profileSetup = '/profile-setup';
   static const String home = '/';
   static const String chat = '/chat/:conversationId';
@@ -54,21 +58,46 @@ final routerProvider = Provider<GoRouter>((ref) {
     redirect: (BuildContext context, GoRouterState state) {
       final authState = ref.read(authProvider);
       final isLoggedIn = authState.isAuthenticated;
-      final isOnAuthRoute =
+      final isOnPublicAuthRoute =
           state.matchedLocation == AppRoutes.login ||
-          state.matchedLocation == AppRoutes.otp ||
+          state.matchedLocation == AppRoutes.smsMigrationPhone ||
+          state.matchedLocation == AppRoutes.smsMigrationOtp;
+      final isOnProtectedAuthRoute =
+          state.matchedLocation == AppRoutes.linkEmailPassword ||
           state.matchedLocation == AppRoutes.profileSetup;
 
-      if (!isLoggedIn && !isOnAuthRoute) {
+      if (!isLoggedIn &&
+          !isOnPublicAuthRoute &&
+          !isOnProtectedAuthRoute) {
         return AppRoutes.login;
       }
 
-      if (isLoggedIn && state.matchedLocation == AppRoutes.login) {
+      if (!isLoggedIn && isOnProtectedAuthRoute) {
+        return AppRoutes.login;
+      }
+
+      if (isLoggedIn &&
+          (state.matchedLocation == AppRoutes.login ||
+              state.matchedLocation == AppRoutes.smsMigrationPhone ||
+              state.matchedLocation == AppRoutes.smsMigrationOtp)) {
+        return AppRoutes.home;
+      }
+
+      final hasPasswordProvider = ref.read(authProvider.notifier).hasPasswordProvider;
+      if (isLoggedIn &&
+          !hasPasswordProvider &&
+          state.matchedLocation != AppRoutes.linkEmailPassword &&
+          state.matchedLocation != AppRoutes.profileSetup) {
+        return AppRoutes.linkEmailPassword;
+      }
+      if (isLoggedIn &&
+          hasPasswordProvider &&
+          state.matchedLocation == AppRoutes.linkEmailPassword) {
         return AppRoutes.home;
       }
 
       // Wait for user profile to load before deciding.
-      if (isLoggedIn && !isOnAuthRoute) {
+      if (isLoggedIn && state.matchedLocation != AppRoutes.profileSetup) {
         final userState = ref.read(userProvider);
         // Still loading — don't redirect yet.
         if (userState.isLoading) return null;
@@ -85,9 +114,19 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state) => const PhoneInputScreen(),
       ),
       GoRoute(
-        path: AppRoutes.otp,
-        name: 'otp',
-        builder: (context, state) => const OtpScreen(),
+        path: AppRoutes.smsMigrationPhone,
+        name: 'sms-migration-phone',
+        builder: (context, state) => const SmsMigrationPhoneScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.smsMigrationOtp,
+        name: 'sms-migration-otp',
+        builder: (context, state) => const SmsMigrationOtpScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.linkEmailPassword,
+        name: 'link-email-password',
+        builder: (context, state) => const LinkEmailPasswordScreen(),
       ),
       GoRoute(
         path: AppRoutes.profileSetup,

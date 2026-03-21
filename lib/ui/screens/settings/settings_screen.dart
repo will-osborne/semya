@@ -20,7 +20,8 @@ class SettingsScreen extends ConsumerWidget {
     final userState = ref.watch(userProvider);
     final l10n = AppLocalizations.of(context)!;
 
-    final phoneNumber = firebaseUser?.phoneNumber ?? '—';
+    final contactIdentifier =
+        firebaseUser?.phoneNumber ?? firebaseUser?.email ?? '—';
     final displayName =
         userState.appUser?.displayName ??
         firebaseUser?.displayName ??
@@ -65,7 +66,7 @@ class SettingsScreen extends ConsumerWidget {
                           Text(displayName, style: theme.textTheme.titleLarge),
                           const SizedBox(height: 4),
                           Text(
-                            phoneNumber,
+                            contactIdentifier,
                             style: theme.textTheme.bodyMedium?.copyWith(
                               color: colorScheme.onSurfaceVariant,
                             ),

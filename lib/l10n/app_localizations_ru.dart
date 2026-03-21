@@ -31,6 +31,86 @@ class AppLocalizationsRu extends AppLocalizations {
   String get encryptedFamilyMessaging => 'Зашифрованный семейный мессенджер';
 
   @override
+  String get enterEmailAndPassword => 'Введите email и пароль';
+
+  @override
+  String get emailAuthDescription =>
+      'Войдите с помощью email-аккаунта Firebase.';
+
+  @override
+  String get emailLabel => 'Email';
+
+  @override
+  String get emailHint => 'name@example.com';
+
+  @override
+  String get emailEmpty => 'Пожалуйста, введите email.';
+
+  @override
+  String get emailInvalid => 'Пожалуйста, введите корректный email.';
+
+  @override
+  String get passwordLabel => 'Пароль';
+
+  @override
+  String get passwordHint => 'Минимум 6 символов';
+
+  @override
+  String get passwordEmpty => 'Пожалуйста, введите пароль.';
+
+  @override
+  String get passwordTooShort => 'Пароль должен содержать не менее 6 символов.';
+
+  @override
+  String get confirmPasswordLabel => 'Подтвердите пароль';
+
+  @override
+  String get confirmPasswordEmpty => 'Пожалуйста, подтвердите пароль.';
+
+  @override
+  String get passwordsDoNotMatch => 'Пароли не совпадают.';
+
+  @override
+  String get signIn => 'Войти';
+
+  @override
+  String get createAccount => 'Создать аккаунт';
+
+  @override
+  String get alreadyHaveAccountSignIn => 'Уже есть аккаунт? Войти';
+
+  @override
+  String get noAccountCreateOne => 'Нет аккаунта? Создать';
+
+  @override
+  String get noEmailVerificationRequired =>
+      'Подтверждение email для входа не требуется.';
+
+  @override
+  String get smsMigrationEntryAction => 'Уже был SMS-аккаунт? Перенести';
+
+  @override
+  String get smsMigrationTitle => 'Перенос SMS-аккаунта';
+
+  @override
+  String get smsMigrationDescription =>
+      'Войдите один раз по существующему номеру телефона, чтобы сохранить текущий аккаунт и данные, затем добавьте email/пароль.';
+
+  @override
+  String get smsMigrationOtpDescription =>
+      'Введите SMS-код для вашего существующего аккаунта.';
+
+  @override
+  String get linkEmailPasswordTitle => 'Добавить email и пароль';
+
+  @override
+  String get linkEmailPasswordDescription =>
+      'Вы вошли по телефону. Добавьте email/пароль, чтобы сохранить этот же ID аккаунта для следующих входов.';
+
+  @override
+  String get linkEmailPasswordAction => 'Привязать email и пароль';
+
+  @override
   String get enterPhoneNumber => 'Введите номер телефона';
 
   @override
@@ -205,10 +285,17 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get signOutConfirmMessage =>
-      'Вы уверены, что хотите выйти? Вам нужно будет снова подтвердить номер телефона для входа.';
+      'Вы уверены, что хотите выйти? Для повторного входа понадобится email и пароль.';
 
   @override
   String get cancel => 'Отмена';
+
+  @override
+  String get startupPermissionsMissing =>
+      'Некоторые разрешения всё ещё не выданы. Включите их в настройках iOS.';
+
+  @override
+  String get openSettingsAction => 'Открыть настройки';
 
   @override
   String get microphonePermissionRequired =>

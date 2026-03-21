@@ -2,11 +2,14 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 import 'package:semya/data/services/media_service.dart';
@@ -97,7 +100,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   Future<void> _startRecording() async {
     final voiceService = ref.read(voiceNoteServiceProvider);
-    final hasPermission = await voiceService.hasPermission();
+    var hasPermission = await voiceService.hasPermission();
+    if (!hasPermission && Platform.isIOS) {
+      final status = await Permission.microphone.request();
+      hasPermission = status.isGranted;
+    }
     if (!hasPermission) {
       if (mounted) {
         final l10n = AppLocalizations.of(context)!;
@@ -111,8 +118,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       return;
     }
 
-    await voiceService.startRecording();
-    setState(() => _isRecording = true);
+    try {
+      await voiceService.startRecording();
+      if (mounted) {
+        setState(() => _isRecording = true);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(e.toString()),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
   }
 
   Future<void> _stopRecordingAndSend() async {
@@ -437,6 +457,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                       conversation: conversation,
                                       currentUserId: currentUserId,
                                     ),
+                                    onRetry: isMine &&
+                                            message.status ==
+                                                MessageStatus.failed
+                                        ? () => ref
+                                              .read(
+                                                sendMessageProvider.notifier,
+                                              )
+                                              .retryMessage(message)
+                                        : null,
                                   ),
                                 ],
                               );
@@ -560,11 +589,13 @@ class _MessageBubble extends StatelessWidget {
     required this.message,
     required this.isMine,
     required this.displayStatus,
+    this.onRetry,
   });
 
   final Message message;
   final bool isMine;
   final MessageStatus displayStatus;
+  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -675,13 +706,24 @@ class _MessageBubble extends StatelessWidget {
                             ),
                             if (isMine) ...[
                               const SizedBox(width: 4),
-                              Icon(
-                                _statusIcon(displayStatus),
-                                size: 12,
-                                color: displayStatus == MessageStatus.read
-                                    ? Colors.lightBlueAccent
-                                    : colorScheme.onPrimary.withOpacity(0.7),
-                              ),
+                              if (displayStatus == MessageStatus.failed &&
+                                  onRetry != null)
+                                GestureDetector(
+                                  onTap: onRetry,
+                                  child: Icon(
+                                    Icons.error_outline,
+                                    size: 14,
+                                    color: colorScheme.onPrimary,
+                                  ),
+                                )
+                              else
+                                Icon(
+                                  _statusIcon(displayStatus),
+                                  size: 12,
+                                  color: displayStatus == MessageStatus.read
+                                      ? Colors.lightBlueAccent
+                                      : colorScheme.onPrimary.withOpacity(0.7),
+                                ),
                             ],
                           ],
                         ),
@@ -797,10 +839,10 @@ class _ImageMessageContent extends StatelessWidget {
       onTap: () => _openFullScreenImage(context, url),
       child: AspectRatio(
         aspectRatio: aspectRatio.clamp(0.5, 2.0),
-        child: CachedNetworkImage(
+        child: _ResilientImage(
           imageUrl: url,
           fit: BoxFit.cover,
-          placeholder: (context, url) => Container(
+          placeholder: Container(
             color: Colors.grey[300],
             child: const Center(
               child: SizedBox(
@@ -810,7 +852,7 @@ class _ImageMessageContent extends StatelessWidget {
               ),
             ),
           ),
-          errorWidget: (context, url, error) => Container(
+          errorWidget: Container(
             color: Colors.grey[300],
             child: const Center(child: Icon(Icons.broken_image, size: 32)),
           ),
@@ -850,19 +892,115 @@ class _FullScreenImageViewer extends StatelessWidget {
         child: InteractiveViewer(
           minScale: 0.5,
           maxScale: 4.0,
-          child: CachedNetworkImage(
+          child: _ResilientImage(
             imageUrl: url,
             fit: BoxFit.contain,
-            placeholder: (context, url) => const Center(
+            placeholder: const Center(
               child: CircularProgressIndicator(color: Colors.white),
             ),
-            errorWidget: (context, url, error) => const Center(
+            errorWidget: const Center(
               child: Icon(Icons.broken_image, color: Colors.white, size: 48),
             ),
           ),
         ),
       ),
     );
+  }
+}
+
+class _ResilientImage extends StatelessWidget {
+  const _ResilientImage({
+    required this.imageUrl,
+    required this.fit,
+    required this.placeholder,
+    required this.errorWidget,
+  });
+
+  final String imageUrl;
+  final BoxFit fit;
+  final Widget placeholder;
+  final Widget errorWidget;
+
+  @override
+  Widget build(BuildContext context) {
+    if (Platform.isIOS) {
+      return _StorageImageFallback(
+        imageUrl: imageUrl,
+        fit: fit,
+        loadingWidget: placeholder,
+        errorWidget: errorWidget,
+      );
+    }
+
+    return CachedNetworkImage(
+      imageUrl: imageUrl,
+      fit: fit,
+      placeholder: (context, url) => placeholder,
+      errorWidget: (context, url, error) => _StorageImageFallback(
+        imageUrl: imageUrl,
+        fit: fit,
+        loadingWidget: placeholder,
+        errorWidget: errorWidget,
+      ),
+    );
+  }
+}
+
+class _StorageImageFallback extends StatefulWidget {
+  const _StorageImageFallback({
+    required this.imageUrl,
+    required this.fit,
+    required this.loadingWidget,
+    required this.errorWidget,
+  });
+
+  final String imageUrl;
+  final BoxFit fit;
+  final Widget loadingWidget;
+  final Widget errorWidget;
+
+  @override
+  State<_StorageImageFallback> createState() => _StorageImageFallbackState();
+}
+
+class _StorageImageFallbackState extends State<_StorageImageFallback> {
+  File? _downloadedFile;
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_downloadFromStorage());
+  }
+
+  Future<void> _downloadFromStorage() async {
+    try {
+      final ref = FirebaseStorage.instance.refFromURL(widget.imageUrl);
+      final tempDir = await getTemporaryDirectory();
+      final file = File(
+        '${tempDir.path}/image_${DateTime.now().microsecondsSinceEpoch}.jpg',
+      );
+      await ref.writeToFile(file);
+      if (!mounted) return;
+      setState(() {
+        _downloadedFile = file;
+        _isLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_downloadedFile != null) {
+      return Image.file(_downloadedFile!, fit: widget.fit);
+    }
+    if (_isLoading) {
+      return widget.loadingWidget;
+    }
+    return widget.errorWidget;
   }
 }
 

@@ -48,6 +48,14 @@ class PaginatedMessagesNotifier extends StateNotifier<PaginatedMessagesState> {
   static const int _pageSize = 20;
 
   void _init() {
+    final uid = _ref.read(authProvider).user?.uid;
+    if (uid != null) {
+      final repo = _ref.read(firestoreMessageRepositoryProvider);
+      unawaited(
+        repo.markStuckSendingMessagesFailed(_conversationId, uid),
+      );
+    }
+
     final repo = _ref.read(firestoreMessageRepositoryProvider);
     _streamSub = repo
         .getMessages(_conversationId, limit: _initialLimit)
@@ -172,10 +180,10 @@ class SendMessageNotifier extends StateNotifier<SendMessageState> {
 
     state = const SendMessageState(isSending: true);
 
-    try {
-      final messageRepo = _ref.read(firestoreMessageRepositoryProvider);
-      final messageId = const Uuid().v4();
+    final messageRepo = _ref.read(firestoreMessageRepositoryProvider);
+    final messageId = const Uuid().v4();
 
+    try {
       final message = Message(
         id: messageId,
         conversationId: conversationId,
@@ -195,6 +203,13 @@ class SendMessageNotifier extends StateNotifier<SendMessageState> {
 
       state = const SendMessageState();
     } catch (e) {
+      try {
+        await messageRepo.updateMessageStatus(
+          conversationId,
+          messageId,
+          MessageStatus.failed,
+        );
+      } catch (_) {}
       state = SendMessageState(error: e.toString());
     }
   }
@@ -205,11 +220,11 @@ class SendMessageNotifier extends StateNotifier<SendMessageState> {
 
     state = const SendMessageState(isSending: true, isSendingVoice: true);
 
-    try {
-      final voiceService = _ref.read(voiceNoteServiceProvider);
-      final messageRepo = _ref.read(firestoreMessageRepositoryProvider);
-      final messageId = const Uuid().v4();
+    final voiceService = _ref.read(voiceNoteServiceProvider);
+    final messageRepo = _ref.read(firestoreMessageRepositoryProvider);
+    final messageId = const Uuid().v4();
 
+    try {
       final downloadUrl = await voiceService.stopRecordingAndUpload(
         conversationId: conversationId,
         messageId: messageId,
@@ -234,6 +249,13 @@ class SendMessageNotifier extends StateNotifier<SendMessageState> {
 
       state = const SendMessageState();
     } catch (e) {
+      try {
+        await messageRepo.updateMessageStatus(
+          conversationId,
+          messageId,
+          MessageStatus.failed,
+        );
+      } catch (_) {}
       state = SendMessageState(error: e.toString());
     }
   }
@@ -247,11 +269,11 @@ class SendMessageNotifier extends StateNotifier<SendMessageState> {
 
     state = const SendMessageState(isSending: true, isSendingMedia: true);
 
-    try {
-      final mediaService = _ref.read(mediaServiceProvider);
-      final messageRepo = _ref.read(firestoreMessageRepositoryProvider);
-      final messageId = const Uuid().v4();
+    final mediaService = _ref.read(mediaServiceProvider);
+    final messageRepo = _ref.read(firestoreMessageRepositoryProvider);
+    final messageId = const Uuid().v4();
 
+    try {
       final result = await mediaService.uploadMedia(
         media: media,
         conversationId: conversationId,
@@ -280,6 +302,41 @@ class SendMessageNotifier extends StateNotifier<SendMessageState> {
 
       state = const SendMessageState();
     } catch (e) {
+      try {
+        await messageRepo.updateMessageStatus(
+          conversationId,
+          messageId,
+          MessageStatus.failed,
+        );
+      } catch (_) {}
+      state = SendMessageState(error: e.toString());
+    }
+  }
+
+  Future<void> retryMessage(Message message) async {
+    state = const SendMessageState(isSending: true);
+
+    final messageRepo = _ref.read(firestoreMessageRepositoryProvider);
+
+    try {
+      await messageRepo.sendMessage(
+        message.copyWith(status: MessageStatus.sending),
+      );
+      await messageRepo.updateMessageStatus(
+        message.conversationId,
+        message.id,
+        MessageStatus.sent,
+      );
+
+      state = const SendMessageState();
+    } catch (e) {
+      try {
+        await messageRepo.updateMessageStatus(
+          message.conversationId,
+          message.id,
+          MessageStatus.failed,
+        );
+      } catch (_) {}
       state = SendMessageState(error: e.toString());
     }
   }

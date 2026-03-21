@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:developer' as dev;
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import 'package:semya/config/router.dart';
 import 'package:semya/domain/entities/call.dart';
@@ -30,6 +32,7 @@ class _IncomingCallOverlayState extends ConsumerState<IncomingCallOverlay>
   String? _pendingVoipToken;
   String? _pendingAcceptedCallId;
   bool _isRecoveringAcceptedCall = false;
+  bool _permissionSnackbarShown = false;
 
   @override
   void initState() {
@@ -69,6 +72,7 @@ class _IncomingCallOverlayState extends ConsumerState<IncomingCallOverlay>
     // Fetch and store initial VoIP token (iOS only).
     unawaited(_initVoipToken());
     unawaited(_recoverAcceptedCallIfNeeded());
+    unawaited(_ensureStartupIosPermissions());
   }
 
   Future<void> _initVoipToken() async {
@@ -188,6 +192,60 @@ class _IncomingCallOverlayState extends ConsumerState<IncomingCallOverlay>
       await _handleAcceptedCall(callId);
       return;
     }
+  }
+
+  Future<void> _ensureStartupIosPermissions() async {
+    if (!Platform.isIOS) return;
+
+    final requiredPermissions = <Permission>[
+      Permission.microphone,
+      Permission.camera,
+      Permission.photos,
+    ];
+
+    final statuses = await Future.wait(
+      requiredPermissions.map((permission) => permission.status),
+    );
+
+    final toRequest = <Permission>[];
+    for (var i = 0; i < requiredPermissions.length; i++) {
+      final status = statuses[i];
+      if (status.isGranted || status.isPermanentlyDenied || status.isRestricted) {
+        continue;
+      }
+      toRequest.add(requiredPermissions[i]);
+    }
+
+    if (toRequest.isNotEmpty) {
+      await toRequest.request();
+    }
+
+    final refreshedStatuses = await Future.wait(
+      requiredPermissions.map((permission) => permission.status),
+    );
+    final hasMissingPermissions = refreshedStatuses.any(
+      (status) => !status.isGranted,
+    );
+
+    if (!hasMissingPermissions || !mounted || _permissionSnackbarShown) return;
+    _permissionSnackbarShown = true;
+
+    final l10n = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    messenger?.showSnackBar(
+      SnackBar(
+        content: Text(
+          l10n?.startupPermissionsMissing ??
+              'Some permissions are still missing. Enable them in Settings.',
+        ),
+        action: SnackBarAction(
+          label: l10n?.openSettingsAction ?? 'Open Settings',
+          onPressed: () {
+            unawaited(openAppSettings());
+          },
+        ),
+      ),
+    );
   }
 
   @override

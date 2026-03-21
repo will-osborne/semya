@@ -21,4 +21,12 @@ abstract class MessageRepository {
     String messageId,
     MessageStatus status,
   );
+
+  /// Finds any messages in [conversationId] sent by [senderId] that are still
+  /// in the [MessageStatus.sending] state and marks them [MessageStatus.failed].
+  /// Called on chat open to recover messages stuck from a previous session.
+  Future<void> markStuckSendingMessagesFailed(
+    String conversationId,
+    String senderId,
+  );
 }

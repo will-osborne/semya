@@ -33,32 +33,13 @@ class FirebaseAuthRepository implements AuthRepository {
     }
     await _firebaseAuth.verifyPhoneNumber(
       phoneNumber: phoneNumber,
-      verificationCompleted: (credential) {
-        dev.log('verifyPhoneNumber: verificationCompleted', name: 'AuthRepo');
-        verificationCompleted(credential);
-      },
-      verificationFailed: (exception) {
-        dev.log(
-          'verifyPhoneNumber: verificationFailed - ${exception.code}: ${exception.message}',
-          name: 'AuthRepo',
-        );
-        verificationFailed(exception);
-      },
+      verificationCompleted: verificationCompleted,
+      verificationFailed: verificationFailed,
       codeSent: (String verificationId, int? resendToken) {
-        dev.log(
-          'verifyPhoneNumber: codeSent, id=$verificationId',
-          name: 'AuthRepo',
-        );
         resolvedVerificationId = verificationId;
         codeSent(verificationId, resendToken);
       },
-      codeAutoRetrievalTimeout: (id) {
-        dev.log(
-          'verifyPhoneNumber: codeAutoRetrievalTimeout',
-          name: 'AuthRepo',
-        );
-        codeAutoRetrievalTimeout(id);
-      },
+      codeAutoRetrievalTimeout: codeAutoRetrievalTimeout,
       forceResendingToken: forceResendingToken,
     );
 
@@ -82,6 +63,54 @@ class FirebaseAuthRepository implements AuthRepository {
       smsCode: smsCode,
     );
     return _firebaseAuth.signInWithCredential(credential);
+  }
+
+  @override
+  Future<fb.UserCredential> signInWithEmailAndPassword({
+    required String email,
+    required String password,
+  }) async {
+    dev.log('signInWithEmailAndPassword: starting for $email', name: 'AuthRepo');
+    return _firebaseAuth.signInWithEmailAndPassword(
+      email: email,
+      password: password,
+    );
+  }
+
+  @override
+  Future<fb.UserCredential> createUserWithEmailAndPassword({
+    required String email,
+    required String password,
+  }) {
+    dev.log(
+      'createUserWithEmailAndPassword: starting for $email',
+      name: 'AuthRepo',
+    );
+    return _firebaseAuth.createUserWithEmailAndPassword(
+      email: email,
+      password: password,
+    );
+  }
+
+  @override
+  Future<fb.User> linkCurrentUserWithEmailPassword({
+    required String email,
+    required String password,
+  }) async {
+    final user = _firebaseAuth.currentUser;
+    if (user == null) {
+      throw fb.FirebaseAuthException(
+        code: 'no-current-user',
+        message: 'No authenticated user to link credentials.',
+      );
+    }
+
+    final credential = fb.EmailAuthProvider.credential(
+      email: email,
+      password: password,
+    );
+    final linked = await user.linkWithCredential(credential);
+    return linked.user ?? _firebaseAuth.currentUser!;
   }
 
   @override

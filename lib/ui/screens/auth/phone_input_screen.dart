@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:semya/config/constants.dart';
@@ -16,23 +15,35 @@ class PhoneInputScreen extends ConsumerStatefulWidget {
 
 class _PhoneInputScreenState extends ConsumerState<PhoneInputScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _phoneController = TextEditingController();
-  bool _hasNavigated = false;
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  final _confirmPasswordController = TextEditingController();
+  bool _isCreateAccountMode = false;
 
   @override
   void dispose() {
-    _phoneController.dispose();
+    _emailController.dispose();
+    _passwordController.dispose();
+    _confirmPasswordController.dispose();
     super.dispose();
   }
 
-  Future<void> _sendCode() async {
+  Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
 
-    final rawNumber = _phoneController.text.trim();
-    // Ensure E.164 format: strip leading 0s if user forgot, prefix +
-    final phoneNumber = rawNumber.startsWith('+') ? rawNumber : '+$rawNumber';
+    final email = _emailController.text.trim();
+    final password = _passwordController.text;
 
-    await ref.read(authProvider.notifier).verifyPhone(phoneNumber);
+    if (_isCreateAccountMode) {
+      await ref
+          .read(authProvider.notifier)
+          .createAccountWithEmailPassword(email: email, password: password);
+      return;
+    }
+
+    await ref
+        .read(authProvider.notifier)
+        .signInWithEmailPassword(email: email, password: password);
   }
 
   @override
@@ -43,15 +54,9 @@ class _PhoneInputScreenState extends ConsumerState<PhoneInputScreen> {
 
     final authState = ref.watch(authProvider);
 
-    // Navigate to OTP screen when code has been sent.
     ref.listen<AuthState>(authProvider, (previous, next) {
-      if (next.codeSent && !_hasNavigated && next.verificationId != null) {
-        _hasNavigated = true;
-        context.push(AppRoutes.otp, extra: next.verificationId);
-        // Reset flag after a short delay so the user can request a resend.
-        Future<void>.delayed(const Duration(seconds: 1), () {
-          if (mounted) _hasNavigated = false;
-        });
+      if (next.isAuthenticated && !(previous?.isAuthenticated ?? false)) {
+        context.go(AppRoutes.home);
       }
 
       if (next.error != null && next.error != previous?.error) {
@@ -122,14 +127,14 @@ class _PhoneInputScreenState extends ConsumerState<PhoneInputScreen> {
                   const SizedBox(height: 48),
 
                   Text(
-                    l10n.enterPhoneNumber,
+                    l10n.enterEmailAndPassword,
                     style: theme.textTheme.titleMedium,
                   ),
 
                   const SizedBox(height: 8),
 
                   Text(
-                    l10n.phoneVerificationDescription,
+                    l10n.emailAuthDescription,
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: colorScheme.onSurfaceVariant,
                     ),
@@ -137,25 +142,21 @@ class _PhoneInputScreenState extends ConsumerState<PhoneInputScreen> {
 
                   const SizedBox(height: 16),
 
-                  // Phone number field
+                  // Email field
                   TextFormField(
-                    controller: _phoneController,
-                    keyboardType: TextInputType.phone,
-                    textInputAction: TextInputAction.done,
-                    inputFormatters: [
-                      FilteringTextInputFormatter.allow(
-                        RegExp(r'[0-9+\-\s()]'),
-                      ),
-                    ],
+                    controller: _emailController,
+                    keyboardType: TextInputType.emailAddress,
+                    textInputAction: TextInputAction.next,
+                    autocorrect: false,
                     autofocus: true,
                     enabled: !authState.isLoading,
                     decoration: InputDecoration(
-                      labelText: l10n.phoneNumberLabel,
-                      hintText: l10n.phoneNumberHint,
+                      labelText: l10n.emailLabel,
+                      hintText: l10n.emailHint,
                       prefixIcon: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 12),
                         child: Icon(
-                          Icons.phone_outlined,
+                          Icons.email_outlined,
                           color: colorScheme.onSurfaceVariant,
                         ),
                       ),
@@ -164,27 +165,74 @@ class _PhoneInputScreenState extends ConsumerState<PhoneInputScreen> {
                         minHeight: 48,
                       ),
                     ),
-                    onFieldSubmitted: (_) => _sendCode(),
+                    onFieldSubmitted: (_) => _submit(),
                     validator: (value) {
                       if (value == null || value.trim().isEmpty) {
-                        return l10n.phoneNumberEmpty;
+                        return l10n.emailEmpty;
                       }
-                      final stripped = value.replaceAll(
-                        RegExp(r'[\s\-()]'),
-                        '',
-                      );
-                      if (stripped.length < 8) {
-                        return l10n.phoneNumberInvalid;
+                      final emailPattern = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
+                      if (!emailPattern.hasMatch(value.trim())) {
+                        return l10n.emailInvalid;
                       }
                       return null;
                     },
                   ),
 
+                  const SizedBox(height: 16),
+
+                  TextFormField(
+                    controller: _passwordController,
+                    obscureText: true,
+                    textInputAction: _isCreateAccountMode
+                        ? TextInputAction.next
+                        : TextInputAction.done,
+                    enabled: !authState.isLoading,
+                    decoration: InputDecoration(
+                      labelText: l10n.passwordLabel,
+                      hintText: l10n.passwordHint,
+                      prefixIcon: const Icon(Icons.lock_outline),
+                    ),
+                    onFieldSubmitted: (_) => _submit(),
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return l10n.passwordEmpty;
+                      }
+                      if (value.length < 6) {
+                        return l10n.passwordTooShort;
+                      }
+                      return null;
+                    },
+                  ),
+
+                  if (_isCreateAccountMode) ...[
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _confirmPasswordController,
+                      obscureText: true,
+                      textInputAction: TextInputAction.done,
+                      enabled: !authState.isLoading,
+                      decoration: InputDecoration(
+                        labelText: l10n.confirmPasswordLabel,
+                        prefixIcon: const Icon(Icons.lock_reset_outlined),
+                      ),
+                      onFieldSubmitted: (_) => _submit(),
+                      validator: (value) {
+                        if (value == null || value.isEmpty) {
+                          return l10n.confirmPasswordEmpty;
+                        }
+                        if (value != _passwordController.text) {
+                          return l10n.passwordsDoNotMatch;
+                        }
+                        return null;
+                      },
+                    ),
+                  ],
+
                   const SizedBox(height: 24),
 
-                  // Send Code button
+                  // Sign-in/create-account button
                   FilledButton(
-                    onPressed: authState.isLoading ? null : _sendCode,
+                    onPressed: authState.isLoading ? null : _submit,
                     child: authState.isLoading
                         ? SizedBox(
                             height: 20,
@@ -194,14 +242,43 @@ class _PhoneInputScreenState extends ConsumerState<PhoneInputScreen> {
                               color: colorScheme.onPrimary,
                             ),
                           )
-                        : Text(l10n.sendCode),
+                        : Text(
+                            _isCreateAccountMode
+                                ? l10n.createAccount
+                                : l10n.signIn,
+                          ),
                   ),
 
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 16),
+
+                  TextButton(
+                    onPressed: authState.isLoading
+                        ? null
+                        : () {
+                            setState(() {
+                              _isCreateAccountMode = !_isCreateAccountMode;
+                              _confirmPasswordController.clear();
+                            });
+                          },
+                    child: Text(
+                      _isCreateAccountMode
+                          ? l10n.alreadyHaveAccountSignIn
+                          : l10n.noAccountCreateOne,
+                    ),
+                  ),
+
+                  TextButton(
+                    onPressed: authState.isLoading
+                        ? null
+                        : () => context.push(AppRoutes.smsMigrationPhone),
+                    child: Text(l10n.smsMigrationEntryAction),
+                  ),
+
+                  const SizedBox(height: 8),
 
                   // Disclaimer
                   Text(
-                    l10n.standardRatesDisclaimer,
+                    l10n.noEmailVerificationRequired,
                     textAlign: TextAlign.center,
                     style: theme.textTheme.bodySmall,
                   ),

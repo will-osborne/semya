@@ -18,5 +18,17 @@ abstract class AuthRepository {
     required String verificationId,
     required String smsCode,
   });
+  Future<fb.UserCredential> signInWithEmailAndPassword({
+    required String email,
+    required String password,
+  });
+  Future<fb.UserCredential> createUserWithEmailAndPassword({
+    required String email,
+    required String password,
+  });
+  Future<fb.User> linkCurrentUserWithEmailPassword({
+    required String email,
+    required String password,
+  });
   Future<void> signOut();
 }

@@ -251,10 +251,11 @@ class WebRtcService {
   }
 
   void toggleSpeaker() {
+    // On iOS, CallKit owns call audio routing. Forcing speakerphone from here
+    // can conflict with CallKit and lead to flaky audio route behavior.
+    if (Platform.isIOS) return;
     _isSpeakerOn = !_isSpeakerOn;
-    if (!Platform.isIOS) {
-      Helper.setSpeakerphoneOn(_isSpeakerOn);
-    }
+    Helper.setSpeakerphoneOn(_isSpeakerOn);
   }
 
   /// Toggles local video by enabling/disabling the video track.

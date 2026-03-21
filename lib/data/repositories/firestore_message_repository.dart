@@ -134,6 +134,28 @@ class FirestoreMessageRepository implements MessageRepository {
     ).doc(messageId).update({'status': status.name});
   }
 
+  @override
+  Future<void> markStuckSendingMessagesFailed(
+    String conversationId,
+    String senderId,
+  ) async {
+    final snapshot = await _messagesCollection(conversationId)
+        .where('status', isEqualTo: MessageStatus.sending.name)
+        .get();
+
+    final stuckDocs = snapshot.docs
+        .where((doc) => doc.data()['senderId'] == senderId)
+        .toList();
+
+    if (stuckDocs.isEmpty) return;
+
+    final batch = _firestore.batch();
+    for (final doc in stuckDocs) {
+      batch.update(doc.reference, {'status': MessageStatus.failed.name});
+    }
+    await batch.commit();
+  }
+
   Map<String, dynamic> _withId(String id, Map<String, dynamic> data) {
     final copy = {...data, 'id': id};
     // Firestore returns Timestamp objects but the generated fromJson expects

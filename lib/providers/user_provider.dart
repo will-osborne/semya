@@ -78,7 +78,7 @@ class UserNotifier extends StateNotifier<UserState> {
 
       final appUser = AppUser(
         id: firebaseUser.uid,
-        phoneNumber: firebaseUser.phoneNumber ?? '',
+        phoneNumber: firebaseUser.phoneNumber ?? firebaseUser.email ?? '',
         displayName: displayName,
         createdAt: DateTime.now(),
         deviceIds: const ['1'],

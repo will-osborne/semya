@@ -8,6 +8,7 @@ import 'package:flutter_callkit_incoming/entities/ios_params.dart';
 import 'package:flutter_callkit_incoming/entities/notification_params.dart';
 import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -57,6 +58,54 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     );
 
     await FlutterCallkitIncoming.showCallkitIncoming(params);
+  } else if (message.data['type'] == 'message' && message.notification == null) {
+    // Data-only message push (server sets content_available=true without a
+    // notification key). iOS delivers these silently in background; show a
+    // local notification so the user actually sees it.
+    final conversationId = message.data['conversationId'] as String? ?? '';
+    if (conversationId.isEmpty) return;
+
+    final plugin = FlutterLocalNotificationsPlugin();
+    await plugin.initialize(
+      const InitializationSettings(
+        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+        iOS: DarwinInitializationSettings(),
+      ),
+    );
+
+    final title = message.data['senderName'] as String? ?? 'New message';
+    final String body;
+    switch (message.data['messageType'] as String?) {
+      case 'image':
+        body = 'Photo';
+      case 'video':
+        body = 'Video';
+      case 'voice':
+        body = 'Voice message';
+      default:
+        body = message.data['preview'] as String? ?? 'New message';
+    }
+
+    await plugin.show(
+      message.hashCode,
+      title,
+      body,
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'semya_messages',
+          'Messages',
+          channelDescription: 'Notifications for new messages and calls',
+          importance: Importance.high,
+          priority: Priority.high,
+        ),
+        iOS: DarwinNotificationDetails(
+          presentAlert: true,
+          presentBadge: true,
+          presentSound: true,
+        ),
+      ),
+      payload: 'chat:$conversationId',
+    );
   }
 }
 

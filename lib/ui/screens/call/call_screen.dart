@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
@@ -308,7 +310,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
             ),
 
           // Speaker toggle (only when video is off).
-          if (!callState.isVideoEnabled)
+          if (!callState.isVideoEnabled && !Platform.isIOS)
             _CallButton(
               icon: callState.isSpeakerOn ? Icons.volume_up : Icons.volume_down,
               label: l10n.speaker,
