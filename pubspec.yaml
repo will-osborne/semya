@@ -1,7 +1,7 @@
 name: semya
 description: "Семья — family messaging app"
 publish_to: 'none'
-version: 1.0.0+12
+version: 1.0.0+22
 
 environment:
   sdk: ^3.11.0
@@ -81,6 +81,7 @@ dev_dependencies:
     sdk: flutter
 
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.3
 
   # Code generation
   build_runner: ^2.4.14
@@ -96,3 +97,13 @@ flutter:
 
   assets:
     - assets/sounds/
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icon/app_icon.png"
+  remove_alpha_ios: true
+  adaptive_icon_background: "#1e1b4b"
+  adaptive_icon_foreground: "assets/icon/app_icon_foreground.png"
+  web:
+    generate: false

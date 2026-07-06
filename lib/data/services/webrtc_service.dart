@@ -1,9 +1,9 @@
 import 'dart:async';
-import 'dart:developer' as dev;
 import 'dart:io';
 
 import 'package:audio_session/audio_session.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:semya/data/services/call_debug_log.dart';
 
 class WebRtcService {
   RTCPeerConnection? _peerConnection;
@@ -92,9 +92,16 @@ class WebRtcService {
       'rtcpMuxPolicy': 'require',
     };
 
+    CallDebugLog.add('createPeerConnection starting', name: 'WebRTC');
     _peerConnection = await createPeerConnection(configuration);
+    CallDebugLog.add('createPeerConnection done', name: 'WebRTC');
 
     _peerConnection!.onIceCandidate = (candidate) {
+      CallDebugLog.add(
+        'ICE candidate: type=${candidate.candidate?.split(' ').elementAtOrNull(7) ?? '?'} '
+        'candidate=${candidate.candidate}',
+        name: 'WebRTC',
+      );
       final controller = _localCandidateController;
       if (controller != null && !controller.isClosed) {
         controller.add(candidate);
@@ -105,10 +112,12 @@ class WebRtcService {
     // flutter_webrtc it fires inconsistently, so onIceConnectionState acts
     // as a complementary source. _emitConnectionState deduplicates.
     _peerConnection!.onConnectionState = (state) {
+      CallDebugLog.add('Connection state: $state', name: 'WebRTC');
       _emitConnectionState(state);
     };
 
     _peerConnection!.onIceConnectionState = (iceState) {
+      CallDebugLog.add('ICE connection state: $iceState', name: 'WebRTC');
       switch (iceState) {
         case RTCIceConnectionState.RTCIceConnectionStateConnected:
         case RTCIceConnectionState.RTCIceConnectionStateCompleted:
@@ -134,9 +143,9 @@ class WebRtcService {
 
     // Handle remote tracks (audio + video).
     _peerConnection!.onTrack = (event) {
-      dev.log(
+      CallDebugLog.add(
         'onTrack: kind=${event.track.kind}, streams=${event.streams.length}',
-        name: 'WebRtcService',
+        name: 'WebRTC',
       );
       if (event.streams.isNotEmpty) {
         _remoteStream = event.streams[0];
@@ -146,10 +155,10 @@ class WebRtcService {
 
     // Fallback for platforms where onTrack doesn't deliver streams.
     _peerConnection!.onAddStream = (stream) {
-      dev.log(
+      CallDebugLog.add(
         'onAddStream: audio=${stream.getAudioTracks().length}, '
         'video=${stream.getVideoTracks().length}',
-        name: 'WebRtcService',
+        name: 'WebRTC',
       );
       _remoteStream = stream;
       remoteRenderer.srcObject = stream;
@@ -160,9 +169,14 @@ class WebRtcService {
     // explicitly enables video. This ensures onTrack fires for both
     // audio AND video on the remote side with real tracks, avoiding
     // iOS bugs with replaceTrack(null → realTrack) and addTransceiver.
+    CallDebugLog.add('getUserMedia(audio+video) starting', name: 'WebRTC');
     try {
       _localStream = await navigator.mediaDevices.getUserMedia({
-        'audio': true,
+        'audio': {
+          'echoCancellation': true,
+          'noiseSuppression': true,
+          'autoGainControl': true,
+        },
         'video': {
           'facingMode': 'user',
           'width': {'ideal': 640},
@@ -170,6 +184,7 @@ class WebRtcService {
         },
       });
       _hasLocalVideo = true;
+      CallDebugLog.add('getUserMedia(audio+video) done', name: 'WebRTC');
       // Disable video track immediately — no video sent until toggled on.
       for (final track in _localStream!.getVideoTracks()) {
         track.enabled = false;
@@ -177,39 +192,66 @@ class WebRtcService {
     } catch (e) {
       // Camera unavailable (e.g. permission denied, simulator).
       // Fall back to audio-only.
-      dev.log(
+      CallDebugLog.add(
         'Camera unavailable, falling back to audio-only: $e',
-        name: 'WebRtcService',
+        name: 'WebRTC',
       );
       _localStream = await navigator.mediaDevices.getUserMedia({
-        'audio': true,
+        'audio': {
+          'echoCancellation': true,
+          'noiseSuppression': true,
+          'autoGainControl': true,
+        },
         'video': false,
       });
+      CallDebugLog.add('getUserMedia(audio-only) done', name: 'WebRTC');
       _hasLocalVideo = false;
     }
 
     // Add all tracks to the peer connection.
+    CallDebugLog.add('addTrack starting', name: 'WebRTC');
     for (final track in _localStream!.getTracks()) {
       await _peerConnection!.addTrack(track, _localStream!);
     }
+    CallDebugLog.add('addTrack done', name: 'WebRTC');
 
     // Default to earpiece (not loudspeaker).
     // On iOS, CallKit manages audio routing — calling setSpeakerphoneOn
     // interferes with the CallKit-managed audio session.
     _isSpeakerOn = false;
     if (!Platform.isIOS) {
+      CallDebugLog.add('setSpeakerphoneOn(false) starting', name: 'WebRTC');
       Helper.setSpeakerphoneOn(false);
+      CallDebugLog.add('setSpeakerphoneOn(false) done', name: 'WebRTC');
     }
 
     // Listen for audio route changes (headphone connect/disconnect, Bluetooth
     // switch) and re-apply the routing preference so the system doesn't
     // silently reroute audio to an unexpected device (Issue 10 fix).
+    CallDebugLog.add('AudioSession.instance starting', name: 'WebRTC');
     final session = await AudioSession.instance;
+    // Configure audio session for voice calls — activates hardware AEC on iOS
+    // (voiceChat mode) and voice communication routing on Android. Without this
+    // the session remains in default mode with no echo cancellation.
+    await session.configure(AudioSessionConfiguration(
+      avAudioSessionCategory: AVAudioSessionCategory.playAndRecord,
+      avAudioSessionCategoryOptions:
+          AVAudioSessionCategoryOptions.allowBluetooth |
+          AVAudioSessionCategoryOptions.allowBluetoothA2dp,
+      avAudioSessionMode: AVAudioSessionMode.voiceChat,
+      androidAudioAttributes: const AndroidAudioAttributes(
+        contentType: AndroidAudioContentType.speech,
+        usage: AndroidAudioUsage.voiceCommunication,
+      ),
+      androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
+    ));
+    CallDebugLog.add('AudioSession.instance done', name: 'WebRTC');
     _audioRouteChangeSub = session.devicesChangedEventStream.listen((_) {
       if (!Platform.isIOS) {
         Helper.setSpeakerphoneOn(_isSpeakerOn);
       }
     });
+    CallDebugLog.add('WebRtcService.initialize() complete', name: 'WebRTC');
   }
 
   Future<RTCSessionDescription> createOffer() async {
@@ -250,12 +292,21 @@ class WebRtcService {
     }
   }
 
-  void toggleSpeaker() {
-    // On iOS, CallKit owns call audio routing. Forcing speakerphone from here
-    // can conflict with CallKit and lead to flaky audio route behavior.
-    if (Platform.isIOS) return;
-    _isSpeakerOn = !_isSpeakerOn;
-    Helper.setSpeakerphoneOn(_isSpeakerOn);
+  Future<void> toggleSpeaker() async {
+    final newValue = !_isSpeakerOn;
+    if (Platform.isIOS) {
+      // On iOS, use AVAudioSession.overrideOutputAudioPort — works alongside
+      // CallKit without conflicting with its audio session ownership.
+      final avSession = AVAudioSession();
+      await avSession.overrideOutputAudioPort(
+        newValue
+            ? AVAudioSessionPortOverride.speaker
+            : AVAudioSessionPortOverride.none,
+      );
+    } else {
+      Helper.setSpeakerphoneOn(newValue);
+    }
+    _isSpeakerOn = newValue;
   }
 
   /// Toggles local video by enabling/disabling the video track.
@@ -276,7 +327,7 @@ class WebRtcService {
 
       // Switch to speaker for video calls.
       if (!_isSpeakerOn) {
-        toggleSpeaker();
+        await toggleSpeaker();
       }
       return true;
     } else {

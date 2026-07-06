@@ -8,6 +8,7 @@ abstract class AppUser with _$AppUser {
   const factory AppUser({
     required String id,
     required String phoneNumber,
+    String? email,
     String? displayName,
     String? photoUrl,
     required DateTime createdAt,

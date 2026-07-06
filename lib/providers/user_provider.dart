@@ -50,7 +50,17 @@ class UserNotifier extends StateNotifier<UserState> {
     state = state.copyWith(isLoading: true, clearError: true);
     try {
       final userRepo = _ref.read(firestoreUserRepositoryProvider);
-      final appUser = await userRepo.getUser(firebaseUser.uid);
+      var appUser = await userRepo.getUser(firebaseUser.uid);
+
+      // Backfill email field for existing users who signed up before it was added.
+      if (appUser != null &&
+          appUser.email == null &&
+          firebaseUser.email != null) {
+        final updated = appUser.copyWith(email: firebaseUser.email);
+        await userRepo.updateUser(updated);
+        appUser = updated;
+      }
+
       state = state.copyWith(appUser: appUser, isLoading: false);
 
       if (appUser != null) {
@@ -79,6 +89,7 @@ class UserNotifier extends StateNotifier<UserState> {
       final appUser = AppUser(
         id: firebaseUser.uid,
         phoneNumber: firebaseUser.phoneNumber ?? firebaseUser.email ?? '',
+        email: firebaseUser.email?.toLowerCase(),
         displayName: displayName,
         createdAt: DateTime.now(),
         deviceIds: const ['1'],

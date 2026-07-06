@@ -12,7 +12,10 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:flutter_webrtc/flutter_webrtc.dart';
+
 import 'app.dart';
+import 'data/services/call_debug_log.dart';
 import 'firebase_options.dart';
 import 'providers/locale_provider.dart';
 
@@ -111,6 +114,14 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  await CallDebugLog.init();
+
+  // Required on Android — without this, createPeerConnection crashes immediately.
+  // iOS initialises WebRTC automatically via the native framework.
+  if (defaultTargetPlatform == TargetPlatform.android) {
+    await WebRTC.initialize();
+  }
 
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   if (kDebugMode && defaultTargetPlatform == TargetPlatform.iOS) {

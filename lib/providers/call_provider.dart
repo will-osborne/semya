@@ -1,6 +1,7 @@
 import 'dart:async';
-import 'dart:developer' as dev;
 import 'dart:io';
+
+import 'package:semya/data/services/call_debug_log.dart';
 
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -206,7 +207,9 @@ class CallNotifier extends StateNotifier<CallState> {
       _callSoundService.playDialTone();
 
       final turnCredentials = await turnFuture;
+      CallDebugLog.add('webRtcService.initialize() starting', name: 'Call');
       await _webRtcService.initialize(iceServers: turnCredentials);
+      CallDebugLog.add('webRtcService.initialize() done', name: 'Call');
 
       // Subscribe to local ICE candidates BEFORE creating the offer so no
       // candidates are lost from the broadcast stream.
@@ -214,7 +217,9 @@ class CallNotifier extends StateNotifier<CallState> {
         _enqueueLocalCandidate(callId, currentUserId, candidate);
       });
 
+      CallDebugLog.add('createOffer() starting', name: 'Call');
       final offer = await _webRtcService.createOffer();
+      CallDebugLog.add('createOffer() done', name: 'Call');
       await _retryWrite(
         operation: 'setOffer',
         action: () => _callRepository.setOffer(callId, {
@@ -242,23 +247,13 @@ class CallNotifier extends StateNotifier<CallState> {
 
       _ringTimeout = Timer(_ringTimeoutDuration, _onRingTimeout);
     } on CallSetupException catch (e, st) {
-      dev.log(
-        'initiateCall setup failed: ${e.message}',
-        name: 'CallNotifier',
-        error: e.cause,
-        stackTrace: st,
-      );
+      CallDebugLog.add('initiateCall setup failed: ${e.message} cause=${e.cause}\n$st', name: 'Call');
       final callId = createdCallId ?? state.activeCall?.id;
       if (callId != null) await _endCallWithError(callId);
       await _cleanup(callId: callId);
       state = CallState(error: e.message);
     } catch (e, st) {
-      dev.log(
-        'initiateCall failed: $e',
-        name: 'CallNotifier',
-        error: e,
-        stackTrace: st,
-      );
+      CallDebugLog.add('initiateCall failed: $e\n$st', name: 'Call');
       final callId = createdCallId ?? state.activeCall?.id;
       if (callId != null) await _endCallWithError(callId);
       await _cleanup(callId: callId);
@@ -291,7 +286,9 @@ class CallNotifier extends StateNotifier<CallState> {
       }
 
       final turnCredentials = await turnFuture;
+      CallDebugLog.add('answerCall: webRtcService.initialize() starting', name: 'Call');
       await _webRtcService.initialize(iceServers: turnCredentials);
+      CallDebugLog.add('answerCall: webRtcService.initialize() done', name: 'Call');
 
       // Subscribe to local ICE candidates BEFORE creating the answer.
       _localCandidateSub = _webRtcService.localCandidates.listen((candidate) {
@@ -358,27 +355,17 @@ class CallNotifier extends StateNotifier<CallState> {
         }),
       );
     } on TimeoutException {
-      dev.log('answerCall timed out waiting for offer', name: 'CallNotifier');
+      CallDebugLog.add('answerCall timed out waiting for offer', name: 'Call');
       await _endCallWithError(callId);
       await _cleanup(callId: callId);
       state = const CallState(error: 'Call timed out');
     } on CallSetupException catch (e, st) {
-      dev.log(
-        'answerCall setup failed: ${e.message}',
-        name: 'CallNotifier',
-        error: e.cause,
-        stackTrace: st,
-      );
+      CallDebugLog.add('answerCall setup failed: ${e.message} cause=${e.cause}\n$st', name: 'Call');
       await _endCallWithError(callId);
       await _cleanup(callId: callId);
       state = CallState(error: e.message);
     } catch (e, st) {
-      dev.log(
-        'answerCall failed: $e',
-        name: 'CallNotifier',
-        error: e,
-        stackTrace: st,
-      );
+      CallDebugLog.add('answerCall failed: $e\n$st', name: 'Call');
       await _endCallWithError(callId);
       await _cleanup(callId: callId);
       state = const CallState(error: 'Failed to answer call');
@@ -456,8 +443,8 @@ class CallNotifier extends StateNotifier<CallState> {
     state = state.copyWith(isMuted: _webRtcService.isMuted);
   }
 
-  void toggleSpeaker() {
-    _webRtcService.toggleSpeaker();
+  Future<void> toggleSpeaker() async {
+    await _webRtcService.toggleSpeaker();
     state = state.copyWith(isSpeakerOn: _webRtcService.isSpeakerOn);
   }
 
@@ -520,10 +507,7 @@ class CallNotifier extends StateNotifier<CallState> {
         _remoteDescriptionSet = true;
         await _flushPendingCandidates();
       } catch (e) {
-        dev.log(
-          'Failed to apply callee answer: $e',
-          name: 'CallNotifier',
-        );
+        CallDebugLog.add('Failed to apply callee answer: $e', name: 'Call');
       } finally {
         _settingDescription = false;
       }
@@ -553,12 +537,9 @@ class CallNotifier extends StateNotifier<CallState> {
               ),
             );
             await _flushPendingCandidates();
-            dev.log('ICE restart: applied callee answer', name: 'CallNotifier');
+            CallDebugLog.add('ICE restart: applied callee answer', name: 'Call');
           } catch (e) {
-            dev.log(
-              'ICE restart: failed to apply answer: $e',
-              name: 'CallNotifier',
-            );
+            CallDebugLog.add('ICE restart: failed to apply answer: $e', name: 'Call');
             // Restore so we can retry on the next update.
             _pendingRestartOfferSdp = sentOfferSdp;
           } finally {
@@ -587,15 +568,9 @@ class CallNotifier extends StateNotifier<CallState> {
                 'type': answer.type,
               }),
             );
-            dev.log(
-              'ICE restart: acknowledged caller offer',
-              name: 'CallNotifier',
-            );
+            CallDebugLog.add('ICE restart: acknowledged caller offer', name: 'Call');
           } catch (e) {
-            dev.log(
-              'ICE restart: failed to process offer: $e',
-              name: 'CallNotifier',
-            );
+            CallDebugLog.add('ICE restart: failed to process offer: $e', name: 'Call');
             // Clear so we can retry if the next update brings the same offer.
             _lastProcessedRestartSdp = null;
           } finally {
@@ -636,17 +611,25 @@ class CallNotifier extends StateNotifier<CallState> {
     for (final candidate in candidates) {
       if (!_processedCandidateIds.add(candidate.id)) continue;
 
+      final parts = candidate.candidate.split(' ');
+      final type = parts.length > 7 ? parts[7] : '?';
+      CallDebugLog.add(
+        'Remote candidate received: type=$type ready=$_remoteDescriptionSet '
+        'candidate=${candidate.candidate}',
+        name: 'Call',
+      );
+
       final rtcCandidate = RTCIceCandidate(
         candidate.candidate,
         candidate.sdpMid,
         candidate.sdpMLineIndex,
       );
 
-      if (_remoteDescriptionSet) {
+      if (_remoteDescriptionSet && !_settingDescription) {
         _addIceCandidateSafe(rtcCandidate);
       } else {
         // Buffer until remote description is ready — adding candidates before
-        // setRemoteDescription causes silent WebRTC failures.
+        // setRemoteDescription (or during one) causes silent WebRTC failures.
         _pendingRemoteCandidates.add(rtcCandidate);
       }
     }
@@ -663,7 +646,7 @@ class CallNotifier extends StateNotifier<CallState> {
     try {
       await _webRtcService.addIceCandidate(candidate);
     } catch (e) {
-      dev.log('Failed to add ICE candidate: $e', name: 'CallNotifier');
+      CallDebugLog.add('Failed to add ICE candidate: $e', name: 'Call');
     }
   }
 
@@ -716,7 +699,7 @@ class CallNotifier extends StateNotifier<CallState> {
   Future<void> _attemptIceRestart(String callId) async {
     if (_isCleaningUp) return;
     try {
-      dev.log('Attempting ICE restart for $callId', name: 'CallNotifier');
+      CallDebugLog.add('Attempting ICE restart for $callId', name: 'Call');
       final offer = await _webRtcService.createRestartOffer();
 
       // Track the SDP we sent so _onCallUpdate can match the callee's answer
@@ -731,7 +714,7 @@ class CallNotifier extends StateNotifier<CallState> {
         }),
       );
     } catch (e) {
-      dev.log('ICE restart failed: $e', name: 'CallNotifier');
+      CallDebugLog.add('ICE restart failed: $e', name: 'Call');
       _pendingRestartOfferSdp = null;
       _iceRestarting = false;
     }
@@ -754,10 +737,7 @@ class CallNotifier extends StateNotifier<CallState> {
         candidateValue.isEmpty ||
         sdpMid == null ||
         sdpMLineIndex == null) {
-      dev.log(
-        'Skipping local ICE candidate with missing fields',
-        name: 'CallNotifier',
-      );
+      CallDebugLog.add('Skipping local ICE candidate with missing fields', name: 'Call');
       return;
     }
 
@@ -781,7 +761,7 @@ class CallNotifier extends StateNotifier<CallState> {
     _processingLocalCandidates = true;
     _processCandidateQueueLoop()
         .catchError((Object e) {
-          dev.log('Candidate queue error: $e', name: 'CallNotifier');
+          CallDebugLog.add('Candidate queue error: $e', name: 'Call');
         })
         .whenComplete(() {
           _processingLocalCandidates = false;
@@ -804,7 +784,7 @@ class CallNotifier extends StateNotifier<CallState> {
           action: () => _callRepository.addIceCandidate(entry.$1, entry.$2),
         );
       } catch (e) {
-        dev.log('ICE candidate write failed: $e', name: 'CallNotifier');
+        CallDebugLog.add('ICE candidate write failed: $e', name: 'Call');
       }
     }
   }
@@ -868,12 +848,7 @@ class CallNotifier extends StateNotifier<CallState> {
         }),
       );
     } catch (e, st) {
-      dev.log(
-        'Failed to propagate call error for $callId: $e',
-        name: 'CallNotifier',
-        error: e,
-        stackTrace: st,
-      );
+      CallDebugLog.add('Failed to propagate call error for $callId: $e\n$st', name: 'Call');
     }
   }
 
@@ -903,13 +878,15 @@ class CallNotifier extends StateNotifier<CallState> {
             .toList();
 
         if (parsed.isEmpty) throw StateError('TURN response is empty');
+        CallDebugLog.add(
+          'TURN credentials fetched: ${parsed.length} server(s), '
+          'urls=${parsed.first['urls']}',
+          name: 'Call',
+        );
         return parsed;
       } catch (e) {
         lastError = e;
-        dev.log(
-          'TURN fetch attempt $attempt/$_maxWriteAttempts failed: $e',
-          name: 'CallNotifier',
-        );
+        CallDebugLog.add('TURN fetch attempt $attempt/$_maxWriteAttempts failed: $e', name: 'Call');
         if (attempt < _maxWriteAttempts) {
           await Future<void>.delayed(Duration(milliseconds: attempt * 500));
         }
@@ -933,10 +910,7 @@ class CallNotifier extends StateNotifier<CallState> {
         return;
       } catch (e) {
         lastError = e;
-        dev.log(
-          '$operation attempt $attempt/$_maxWriteAttempts failed: $e',
-          name: 'CallNotifier',
-        );
+        CallDebugLog.add('$operation attempt $attempt/$_maxWriteAttempts failed: $e', name: 'Call');
         if (attempt < _maxWriteAttempts) {
           await Future<void>.delayed(Duration(milliseconds: attempt * 250));
         }

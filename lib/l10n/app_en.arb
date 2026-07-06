@@ -78,7 +78,9 @@
   "newGroup": "New Group",
   "createGroupConversation": "Create a group conversation",
   "searchByPhoneNumber": "Search by phone number",
+  "searchByEmail": "Search by email address",
   "enterPhoneToFind": "Enter a phone number to find family members.",
+  "enterEmailToFind": "Enter an email address to find family members.",
   "searchFailed": "Search failed: {error}",
   "@searchFailed": {
     "placeholders": {
@@ -144,7 +146,7 @@
       "count": { "type": "int" }
     }
   },
-  "searchForFamilyMembers": "Search for family members by phone number.",
+  "searchForFamilyMembers": "Search for family members by email address.",
   "noUsersFoundInstallApp": "No users found. Make sure they have the app installed.",
   "failedToCreateGroup": "Failed to create group: {error}",
   "@failedToCreateGroup": {

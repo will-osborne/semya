@@ -470,11 +470,23 @@ abstract class AppLocalizations {
   /// **'Search by phone number'**
   String get searchByPhoneNumber;
 
+  /// No description provided for @searchByEmail.
+  ///
+  /// In en, this message translates to:
+  /// **'Search by email address'**
+  String get searchByEmail;
+
   /// No description provided for @enterPhoneToFind.
   ///
   /// In en, this message translates to:
   /// **'Enter a phone number to find family members.'**
   String get enterPhoneToFind;
+
+  /// No description provided for @enterEmailToFind.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter an email address to find family members.'**
+  String get enterEmailToFind;
 
   /// No description provided for @searchFailed.
   ///
@@ -731,7 +743,7 @@ abstract class AppLocalizations {
   /// No description provided for @searchForFamilyMembers.
   ///
   /// In en, this message translates to:
-  /// **'Search for family members by phone number.'**
+  /// **'Search for family members by email address.'**
   String get searchForFamilyMembers;
 
   /// No description provided for @noUsersFoundInstallApp.

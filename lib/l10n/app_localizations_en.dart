@@ -211,7 +211,14 @@ class AppLocalizationsEn extends AppLocalizations {
   String get searchByPhoneNumber => 'Search by phone number';
 
   @override
+  String get searchByEmail => 'Search by email address';
+
+  @override
   String get enterPhoneToFind => 'Enter a phone number to find family members.';
+
+  @override
+  String get enterEmailToFind =>
+      'Enter an email address to find family members.';
 
   @override
   String searchFailed(String error) {
@@ -353,7 +360,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get searchForFamilyMembers =>
-      'Search for family members by phone number.';
+      'Search for family members by email address.';
 
   @override
   String get noUsersFoundInstallApp =>

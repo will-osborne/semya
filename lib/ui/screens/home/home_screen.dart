@@ -82,7 +82,7 @@ class HomeScreen extends ConsumerWidget {
 }
 
 // ---------------------------------------------------------------------------
-// New chat bottom sheet — search by phone, start direct or group
+// New chat bottom sheet — email search for DM (primary), group chat (secondary)
 // ---------------------------------------------------------------------------
 
 class _NewChatSheet extends ConsumerStatefulWidget {
@@ -131,30 +131,13 @@ class _NewChatSheetState extends ConsumerState<_NewChatSheet> {
               Text(l10n.newChat, style: theme.textTheme.titleLarge),
               const SizedBox(height: 16),
 
-              // Group chat option
-              ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: colorScheme.secondaryContainer,
-                  child: Icon(
-                    Icons.group_add,
-                    color: colorScheme.onSecondaryContainer,
-                  ),
-                ),
-                title: Text(l10n.newGroup),
-                subtitle: Text(l10n.createGroupConversation),
-                onTap: () {
-                  Navigator.of(context).pop();
-                  context.push(AppRoutes.createGroup);
-                },
-              ),
-              const Divider(height: 24),
-
-              // Phone search
+              // Email search — primary action
               TextField(
                 controller: _searchController,
-                keyboardType: TextInputType.phone,
+                keyboardType: TextInputType.emailAddress,
+                autofocus: true,
                 decoration: InputDecoration(
-                  hintText: l10n.searchByPhoneNumber,
+                  hintText: l10n.searchByEmail,
                   prefixIcon: const Icon(Icons.search),
                   suffixIcon: _query.isNotEmpty
                       ? IconButton(
@@ -170,7 +153,7 @@ class _NewChatSheetState extends ConsumerState<_NewChatSheet> {
               ),
               const SizedBox(height: 8),
 
-              // Results
+              // Results or empty state
               if (_query.trim().isNotEmpty)
                 Expanded(
                   child: _SearchResults(
@@ -182,7 +165,7 @@ class _NewChatSheetState extends ConsumerState<_NewChatSheet> {
                 Expanded(
                   child: Center(
                     child: Text(
-                      l10n.enterPhoneToFind,
+                      l10n.enterEmailToFind,
                       style: theme.textTheme.bodyMedium?.copyWith(
                         color: colorScheme.onSurfaceVariant,
                       ),
@@ -190,6 +173,17 @@ class _NewChatSheetState extends ConsumerState<_NewChatSheet> {
                     ),
                   ),
                 ),
+
+              // New group — secondary action
+              const Divider(height: 16),
+              TextButton.icon(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  context.push(AppRoutes.createGroup);
+                },
+                icon: const Icon(Icons.group_add_outlined),
+                label: Text(l10n.newGroup),
+              ),
             ],
           ),
         );
@@ -243,7 +237,7 @@ class _SearchResults extends ConsumerWidget {
                 ),
               ),
               title: Text(user.displayName ?? l10n.unknown),
-              subtitle: Text(user.phoneNumber),
+              subtitle: Text(user.email ?? user.phoneNumber),
               onTap: () async {
                 Navigator.of(context).pop();
                 final conversationService = ref.read(

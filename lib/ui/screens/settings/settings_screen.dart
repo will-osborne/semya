@@ -125,6 +125,16 @@ class SettingsScreen extends ConsumerWidget {
             onTap: () => _showLanguagePicker(context, ref),
           ),
 
+          // Section header
+          _SectionHeader(label: 'Developer'),
+
+          _SettingsTile(
+            icon: Icons.bug_report_outlined,
+            title: 'Call Debug Logs',
+            subtitle: 'ICE candidates, TURN, connection state',
+            onTap: () => context.push(AppRoutes.callDebug),
+          ),
+
           const SizedBox(height: 24),
 
           // Sign out

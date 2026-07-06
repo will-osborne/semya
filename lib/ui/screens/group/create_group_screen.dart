@@ -50,7 +50,7 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
 
     try {
       final userRepo = ref.read(firestoreUserRepositoryProvider);
-      final results = await userRepo.searchUsersByPhone(query.trim());
+      final results = await userRepo.searchUsersByEmail(query.trim());
       // Filter out the current user.
       final uid = ref.read(authProvider).user?.uid;
       final filtered = results.where((u) => u.id != uid).toList();
@@ -262,11 +262,11 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: TextField(
                 controller: _searchController,
-                keyboardType: TextInputType.phone,
+                keyboardType: TextInputType.emailAddress,
                 textInputAction: TextInputAction.search,
                 enabled: !_isCreating,
                 decoration: InputDecoration(
-                  hintText: l10n.searchByPhoneNumber,
+                  hintText: l10n.searchByEmail,
                   prefixIcon: const Icon(Icons.search),
                   suffixIcon: _searchController.text.isNotEmpty
                       ? IconButton(
@@ -377,7 +377,7 @@ class _ContactTile extends StatelessWidget {
               ),
       ),
       title: Text(name),
-      subtitle: Text(user.phoneNumber),
+      subtitle: Text(user.email ?? user.phoneNumber),
       trailing: isSelected
           ? Icon(Icons.check_circle, color: colorScheme.primary)
           : Icon(Icons.circle_outlined, color: colorScheme.outline),

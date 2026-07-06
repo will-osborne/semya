@@ -10,6 +10,7 @@ import '../ui/screens/auth/sms_migration_phone_screen.dart';
 import '../ui/screens/home/home_screen.dart';
 import '../ui/screens/chat/chat_screen.dart';
 import '../ui/screens/settings/settings_screen.dart';
+import '../ui/screens/settings/call_debug_screen.dart';
 import '../ui/screens/call/call_screen.dart';
 import '../ui/screens/group/create_group_screen.dart';
 import '../providers/auth_provider.dart';
@@ -28,6 +29,7 @@ class AppRoutes {
   static const String settings = '/settings';
   static const String createGroup = '/create-group';
   static const String call = '/call/:callId';
+  static const String callDebug = '/call-debug';
 }
 
 /// Notifier that triggers router refresh when auth or user state changes.
@@ -163,6 +165,11 @@ final routerProvider = Provider<GoRouter>((ref) {
           final callId = state.pathParameters['callId']!;
           return CallScreen(callId: callId);
         },
+      ),
+      GoRoute(
+        path: AppRoutes.callDebug,
+        name: 'call-debug',
+        builder: (context, state) => const CallDebugScreen(),
       ),
     ],
   );

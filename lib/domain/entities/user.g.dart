@@ -9,6 +9,7 @@ part of 'user.dart';
 _AppUser _$AppUserFromJson(Map<String, dynamic> json) => _AppUser(
   id: json['id'] as String,
   phoneNumber: json['phoneNumber'] as String,
+  email: json['email'] as String?,
   displayName: json['displayName'] as String?,
   photoUrl: json['photoUrl'] as String?,
   createdAt: DateTime.parse(json['createdAt'] as String),
@@ -23,6 +24,7 @@ _AppUser _$AppUserFromJson(Map<String, dynamic> json) => _AppUser(
 Map<String, dynamic> _$AppUserToJson(_AppUser instance) => <String, dynamic>{
   'id': instance.id,
   'phoneNumber': instance.phoneNumber,
+  'email': instance.email,
   'displayName': instance.displayName,
   'photoUrl': instance.photoUrl,
   'createdAt': instance.createdAt.toIso8601String(),

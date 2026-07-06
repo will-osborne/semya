@@ -410,8 +410,52 @@ export const getTurnCredentials = onCall(
 
     const data = await resp.json();
     // Cloudflare returns iceServers as a single object; WebRTC expects an array.
-    const servers = data.iceServers;
-    return Array.isArray(servers) ? servers : [servers];
+    const raw = data.iceServers;
+    const servers = Array.isArray(raw) ? raw : [raw];
+
+    // flutter_webrtc on some iOS/Android versions silently fails to parse TURN
+    // URLs that contain query parameters (e.g. ?transport=udp). Strip the
+    // query strings and split each transport variant into its own entry so
+    // WebRTC negotiates UDP for turn: and TCP for turns: independently.
+    return servers.flatMap((server: {
+      urls: string | string[];
+      username?: string;
+      credential?: string;
+    }) => {
+      const allUrls: string[] = (Array.isArray(server.urls)
+        ? server.urls
+        : [server.urls]
+      ).map((u: string) => u.split("?")[0]); // strip ?transport= etc.
+
+      const stun = allUrls.filter((u) => u.startsWith("stun:"));
+      const turnUdp = allUrls.filter((u) => u.startsWith("turn:"));
+      const turnTls = allUrls.filter((u) => u.startsWith("turns:"));
+
+      // Add port 443 variants for turns: — port 5349 can be blocked by some
+      // ISPs/carriers, but port 443 (HTTPS) is universally open.
+      // Replace the existing port number directly to avoid URL-class
+      // pathname artifacts (e.g. trailing "/") that crash native WebRTC.
+      const turnTls443 = turnTls.map((u) =>
+        /:\d+$/.test(u) ? u.replace(/:\d+$/, ":443") : `${u}:443`,
+      );
+
+      const result: object[] = [];
+      if (stun.length > 0) {
+        result.push({urls: stun});
+      }
+      if (turnUdp.length > 0) {
+        result.push({urls: turnUdp, username: server.username, credential: server.credential});
+      }
+      if (turnTls.length > 0 || turnTls443.length > 0) {
+        // Include both port 5349 and port 443 — WebRTC tries them in parallel.
+        result.push({
+          urls: [...turnTls, ...turnTls443],
+          username: server.username,
+          credential: server.credential,
+        });
+      }
+      return result;
+    });
   },
 );
 

@@ -2,6 +2,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:semya/domain/entities/message.dart';
 import 'package:semya/domain/repositories/message_repository.dart';
 
+const _kSendTimeout = Duration(seconds: 15);
+const _kReadTimeout = Duration(seconds: 10);
+
 class FirestoreMessageRepository implements MessageRepository {
   FirestoreMessageRepository({FirebaseFirestore? firestore})
     : _firestore = firestore ?? FirebaseFirestore.instance;
@@ -25,7 +28,12 @@ class FirestoreMessageRepository implements MessageRepository {
     final conversationRef = _firestore
         .collection(_conversationsCollection)
         .doc(message.conversationId);
-    final conversationSnapshot = await conversationRef.get();
+    final conversationSnapshot = await conversationRef.get().timeout(
+      _kReadTimeout,
+      onTimeout: () => throw Exception(
+        'Connection too slow. Check your network and try again.',
+      ),
+    );
     final conversationData = conversationSnapshot.data();
     if (!conversationSnapshot.exists || conversationData == null) {
       throw StateError(
@@ -62,7 +70,12 @@ class FirestoreMessageRepository implements MessageRepository {
     }
     batch.update(conversationRef, conversationUpdates);
 
-    await batch.commit();
+    await batch.commit().timeout(
+      _kSendTimeout,
+      onTimeout: () => throw Exception(
+        'Message send timed out. Check your connection and try again.',
+      ),
+    );
   }
 
   @override
@@ -129,9 +142,15 @@ class FirestoreMessageRepository implements MessageRepository {
     String messageId,
     MessageStatus status,
   ) async {
-    await _messagesCollection(
-      conversationId,
-    ).doc(messageId).update({'status': status.name});
+    await _messagesCollection(conversationId)
+        .doc(messageId)
+        .update({'status': status.name})
+        .timeout(
+          _kSendTimeout,
+          onTimeout: () => throw Exception(
+            'Connection too slow. Check your network and try again.',
+          ),
+        );
   }
 
   @override

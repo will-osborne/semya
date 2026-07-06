@@ -34,7 +34,7 @@ final conversationDetailProvider = StreamProvider.family<Conversation?, String>(
 );
 
 // ---------------------------------------------------------------------------
-// User search by phone number
+// User search by email
 // ---------------------------------------------------------------------------
 
 final userSearchProvider = FutureProvider.family<List<AppUser>, String>((
@@ -43,7 +43,7 @@ final userSearchProvider = FutureProvider.family<List<AppUser>, String>((
 ) {
   if (query.trim().isEmpty) return Future.value([]);
   final repo = ref.watch(firestoreUserRepositoryProvider);
-  return repo.searchUsersByPhone(query.trim());
+  return repo.searchUsersByEmail(query.trim());
 });
 
 // ---------------------------------------------------------------------------

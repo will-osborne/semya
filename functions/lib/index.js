@@ -98,17 +98,29 @@ async function sendToTokens(tokens, title, body, data, userTokenMap) {
     }
 }
 // ---------------------------------------------------------------------------
+// APNs client cache — reuses the HTTP/2 connection across warm invocations.
+// ---------------------------------------------------------------------------
+let _cachedApnsClient = null;
+let _cachedApnsIsSandbox = null;
+function getApnsClient() {
+    const { team, keyId, signingKey, bundleId, isSandbox } = resolveApnsConfig();
+    if (_cachedApnsClient === null || _cachedApnsIsSandbox !== isSandbox) {
+        _cachedApnsClient = new apns2_1.ApnsClient({
+            team,
+            keyId,
+            signingKey,
+            defaultTopic: `${bundleId}.voip`,
+            host: isSandbox ? apns2_1.Host.development : apns2_1.Host.production,
+        });
+        _cachedApnsIsSandbox = isSandbox;
+    }
+    return _cachedApnsClient;
+}
+// ---------------------------------------------------------------------------
 // Helper: send VoIP push via APNs (iOS only)
 // ---------------------------------------------------------------------------
 async function sendVoipPush(voipToken, callId, callerId, callerName) {
-    const { team, keyId, signingKey, bundleId, isSandbox } = resolveApnsConfig();
-    const client = new apns2_1.ApnsClient({
-        team,
-        keyId,
-        signingKey,
-        defaultTopic: `${bundleId}.voip`,
-        host: isSandbox ? apns2_1.Host.development : apns2_1.Host.production,
-    });
+    const client = getApnsClient();
     const notification = new apns2_1.Notification(voipToken, {
         type: "voip",
         priority: 10,
@@ -303,8 +315,41 @@ exports.getTurnCredentials = (0, https_1.onCall)({ secrets: [cfTurnTokenId, cfTu
     }
     const data = await resp.json();
     // Cloudflare returns iceServers as a single object; WebRTC expects an array.
-    const servers = data.iceServers;
-    return Array.isArray(servers) ? servers : [servers];
+    const raw = data.iceServers;
+    const servers = Array.isArray(raw) ? raw : [raw];
+    // flutter_webrtc on some iOS/Android versions silently fails to parse TURN
+    // URLs that contain query parameters (e.g. ?transport=udp). Strip the
+    // query strings and split each transport variant into its own entry so
+    // WebRTC negotiates UDP for turn: and TCP for turns: independently.
+    return servers.flatMap((server) => {
+        const allUrls = (Array.isArray(server.urls)
+            ? server.urls
+            : [server.urls]).map((u) => u.split("?")[0]); // strip ?transport= etc.
+        const stun = allUrls.filter((u) => u.startsWith("stun:"));
+        const turnUdp = allUrls.filter((u) => u.startsWith("turn:"));
+        const turnTls = allUrls.filter((u) => u.startsWith("turns:"));
+        // Add port 443 variants for turns: — port 5349 can be blocked by some
+        // ISPs/carriers, but port 443 (HTTPS) is universally open.
+        // Replace the existing port number directly to avoid URL-class
+        // pathname artifacts (e.g. trailing "/") that crash native WebRTC.
+        const turnTls443 = turnTls.map((u) => /:\d+$/.test(u) ? u.replace(/:\d+$/, ":443") : `${u}:443`);
+        const result = [];
+        if (stun.length > 0) {
+            result.push({ urls: stun });
+        }
+        if (turnUdp.length > 0) {
+            result.push({ urls: turnUdp, username: server.username, credential: server.credential });
+        }
+        if (turnTls.length > 0 || turnTls443.length > 0) {
+            // Include both port 5349 and port 443 — WebRTC tries them in parallel.
+            result.push({
+                urls: [...turnTls, ...turnTls443],
+                username: server.username,
+                credential: server.credential,
+            });
+        }
+        return result;
+    });
 });
 // ---------------------------------------------------------------------------
 // Scheduled: clean up stale calls every 2 minutes
