@@ -14,7 +14,12 @@ class WebRtcService {
   bool _isVideoEnabled = false;
   bool _isFrontCamera = true;
   bool _renderersInitialized = false;
-  bool _hasLocalVideo = false;
+
+  // The RTP sender carrying the video m-line, captured at initialize().
+  // Video is (re)enabled by swapping fresh camera tracks onto this sender
+  // via replaceTrack — no SDP renegotiation needed. Null when the session
+  // was set up audio-only (camera unavailable/denied at call start).
+  RTCRtpSender? _videoSender;
 
   // Controllers are recreated each call via initialize() / dispose().
   StreamController<RTCIceCandidate>? _localCandidateController;
@@ -57,8 +62,14 @@ class WebRtcService {
   }
 
   /// Pass [iceServers] from Cloudflare TURN credentials.
+  ///
+  /// [captureVideo] controls whether a camera track is acquired and added at
+  /// setup. Pass false when camera permission isn't granted — the session is
+  /// then audio-only for its whole lifetime (the video m-line is only
+  /// negotiated at setup; see the comment above getUserMedia below).
   Future<void> initialize({
     required List<Map<String, dynamic>> iceServers,
+    bool captureVideo = true,
   }) async {
     // Create fresh controllers for each call session.
     _localCandidateController = StreamController<RTCIceCandidate>.broadcast();
@@ -164,38 +175,48 @@ class WebRtcService {
       remoteRenderer.srcObject = stream;
     };
 
-    // Acquire audio + video. Video track is disabled immediately — the
-    // camera captures briefly but no frames are sent until the user
-    // explicitly enables video. This ensures onTrack fires for both
-    // audio AND video on the remote side with real tracks, avoiding
-    // iOS bugs with replaceTrack(null → realTrack) and addTransceiver.
-    CallDebugLog.add('getUserMedia(audio+video) starting', name: 'WebRTC');
-    try {
-      _localStream = await navigator.mediaDevices.getUserMedia({
-        'audio': {
-          'echoCancellation': true,
-          'noiseSuppression': true,
-          'autoGainControl': true,
-        },
-        'video': {
-          'facingMode': 'user',
-          'width': {'ideal': 640},
-          'height': {'ideal': 480},
-        },
-      });
-      _hasLocalVideo = true;
-      CallDebugLog.add('getUserMedia(audio+video) done', name: 'WebRTC');
-      // Disable video track immediately — no video sent until toggled on.
-      for (final track in _localStream!.getVideoTracks()) {
-        track.enabled = false;
+    // Acquire audio + video. The video track is added at setup so the video
+    // m-line is negotiated with a REAL track — onTrack fires on the remote
+    // side for both kinds, avoiding iOS bugs with replaceTrack(null →
+    // realTrack) and addTransceiver. Full mid-call renegotiation is not an
+    // option in this architecture: only the original caller can push offers
+    // through the restartOffer machinery, so a callee could never add a
+    // video m-line later. The camera track is therefore acquired up front
+    // and then STOPPED (below) — the m-line survives, but the camera
+    // indicator turns off and no battery is drained while video is off.
+    if (captureVideo) {
+      CallDebugLog.add('getUserMedia(audio+video) starting', name: 'WebRTC');
+      try {
+        _localStream = await navigator.mediaDevices.getUserMedia({
+          'audio': {
+            'echoCancellation': true,
+            'noiseSuppression': true,
+            'autoGainControl': true,
+          },
+          'video': {
+            'facingMode': 'user',
+            'width': {'ideal': 640},
+            'height': {'ideal': 480},
+          },
+        });
+        CallDebugLog.add('getUserMedia(audio+video) done', name: 'WebRTC');
+        // Disable video track immediately — no video sent until toggled on.
+        for (final track in _localStream!.getVideoTracks()) {
+          track.enabled = false;
+        }
+      } catch (e) {
+        // Camera unavailable (e.g. hardware issue, simulator).
+        // Fall back to audio-only.
+        CallDebugLog.add(
+          'Camera unavailable, falling back to audio-only: $e',
+          name: 'WebRTC',
+        );
+        _localStream = null;
       }
-    } catch (e) {
-      // Camera unavailable (e.g. permission denied, simulator).
-      // Fall back to audio-only.
-      CallDebugLog.add(
-        'Camera unavailable, falling back to audio-only: $e',
-        name: 'WebRTC',
-      );
+    }
+
+    if (_localStream == null) {
+      CallDebugLog.add('getUserMedia(audio-only) starting', name: 'WebRTC');
       _localStream = await navigator.mediaDevices.getUserMedia({
         'audio': {
           'echoCancellation': true,
@@ -205,15 +226,26 @@ class WebRtcService {
         'video': false,
       });
       CallDebugLog.add('getUserMedia(audio-only) done', name: 'WebRTC');
-      _hasLocalVideo = false;
     }
 
-    // Add all tracks to the peer connection.
+    // Add all tracks to the peer connection, remembering the video sender so
+    // toggleVideo can replaceTrack onto it later.
     CallDebugLog.add('addTrack starting', name: 'WebRTC');
     for (final track in _localStream!.getTracks()) {
-      await _peerConnection!.addTrack(track, _localStream!);
+      final sender = await _peerConnection!.addTrack(track, _localStream!);
+      if (track.kind == 'video') {
+        _videoSender = sender;
+      }
     }
     CallDebugLog.add('addTrack done', name: 'WebRTC');
+
+    // Release the camera while video is off. A merely-disabled track keeps
+    // the camera capturing (indicator on, battery drain); stopping it does
+    // not remove the negotiated m-line — the sender stays in place and the
+    // next toggleVideo swaps a fresh camera track onto it.
+    for (final track in _localStream!.getVideoTracks()) {
+      await track.stop();
+    }
 
     // Default to earpiece (not loudspeaker).
     // On iOS, CallKit manages audio routing — calling setSpeakerphoneOn
@@ -309,19 +341,15 @@ class WebRtcService {
     _isSpeakerOn = newValue;
   }
 
-  /// Toggles local video by enabling/disabling the video track.
-  /// No replaceTrack or SDP renegotiation needed — the video track
-  /// was added at init with enabled=false.
+  /// Toggles local video. The video m-line was negotiated at initialize()
+  /// with a real (since stopped) track, so enabling acquires a fresh camera
+  /// track and swaps it onto the existing sender via replaceTrack — no SDP
+  /// renegotiation. Disabling stops the track outright so the camera
+  /// indicator turns off and no battery is drained.
   Future<bool> toggleVideo() async {
-    if (!_hasLocalVideo) return false;
-
-    final videoTracks = _localStream?.getVideoTracks();
-    if (videoTracks == null || videoTracks.isEmpty) return false;
-
     if (!_isVideoEnabled) {
-      for (final track in videoTracks) {
-        track.enabled = true;
-      }
+      final started = await _startVideoCapture();
+      if (!started) return false;
       localRenderer.srcObject = _localStream;
       _isVideoEnabled = true;
 
@@ -331,12 +359,60 @@ class WebRtcService {
       }
       return true;
     } else {
-      for (final track in videoTracks) {
-        track.enabled = false;
-      }
+      await _stopVideoCapture();
       localRenderer.srcObject = null;
       _isVideoEnabled = false;
       return true;
+    }
+  }
+
+  /// Acquires a fresh camera track and swaps it onto the video sender that
+  /// was negotiated at call setup. replaceTrack(track → track) requires no
+  /// renegotiation because the m-line already exists.
+  Future<bool> _startVideoCapture() async {
+    final sender = _videoSender;
+    // Audio-only session (camera denied/unavailable at setup) — no video
+    // m-line was negotiated, so video cannot be enabled for this call.
+    if (sender == null) return false;
+
+    try {
+      CallDebugLog.add('getUserMedia(video) for enable starting', name: 'WebRTC');
+      final stream = await navigator.mediaDevices.getUserMedia({
+        'audio': false,
+        'video': {
+          'facingMode': _isFrontCamera ? 'user' : 'environment',
+          'width': {'ideal': 640},
+          'height': {'ideal': 480},
+        },
+      });
+      final newTrack = stream.getVideoTracks().first;
+      await sender.replaceTrack(newTrack);
+
+      // Keep _localStream consistent for the renderer and dispose().
+      final local = _localStream;
+      if (local != null) {
+        for (final old in local.getVideoTracks()) {
+          await local.removeTrack(old);
+          await old.stop();
+        }
+        await local.addTrack(newTrack);
+      }
+      CallDebugLog.add('Video capture started (replaceTrack)', name: 'WebRTC');
+      return true;
+    } catch (e) {
+      CallDebugLog.add('Failed to start video capture: $e', name: 'WebRTC');
+      return false;
+    }
+  }
+
+  /// Stops (not just disables) the local camera track. The stopped track
+  /// stays attached to the sender, keeping the m-line valid; the next enable
+  /// replaces it with a fresh one.
+  Future<void> _stopVideoCapture() async {
+    final tracks = _localStream?.getVideoTracks() ?? const <MediaStreamTrack>[];
+    for (final track in tracks) {
+      track.enabled = false;
+      await track.stop();
     }
   }
 
@@ -368,7 +444,7 @@ class WebRtcService {
     _isVideoEnabled = false;
     _isFrontCamera = true;
     _hasRemoteVideo = false;
-    _hasLocalVideo = false;
+    _videoSender = null;
     _lastEmittedConnectionState = null;
 
     if (_renderersInitialized) {

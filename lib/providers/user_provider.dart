@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:developer' as dev;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -11,23 +12,33 @@ import 'package:semya/providers/providers.dart';
 // State
 // ---------------------------------------------------------------------------
 
+/// Profile-load lifecycle: [unknown] until a load has been attempted, so the
+/// router can distinguish "not looked yet" from "looked and found nothing".
+enum UserLoadStatus { unknown, loading, loaded }
+
 class UserState {
-  const UserState({this.appUser, this.isLoading = false, this.error});
+  const UserState({
+    this.appUser,
+    this.status = UserLoadStatus.unknown,
+    this.error,
+  });
 
   final AppUser? appUser;
-  final bool isLoading;
+  final UserLoadStatus status;
   final String? error;
+
+  bool get isLoading => status == UserLoadStatus.loading;
 
   UserState copyWith({
     AppUser? appUser,
     bool clearUser = false,
-    bool? isLoading,
+    UserLoadStatus? status,
     String? error,
     bool clearError = false,
   }) {
     return UserState(
       appUser: clearUser ? null : (appUser ?? this.appUser),
-      isLoading: isLoading ?? this.isLoading,
+      status: status ?? this.status,
       error: clearError ? null : (error ?? this.error),
     );
   }
@@ -42,12 +53,17 @@ class UserNotifier extends StateNotifier<UserState> {
 
   final Ref _ref;
 
+  /// Clears all loaded profile state (e.g. after sign-out or user switch).
+  void reset() {
+    state = const UserState();
+  }
+
   /// Loads the current user's AppUser document from Firestore.
   Future<void> loadCurrentUser() async {
     final firebaseUser = _ref.read(authProvider).user;
     if (firebaseUser == null) return;
 
-    state = state.copyWith(isLoading: true, clearError: true);
+    state = state.copyWith(status: UserLoadStatus.loading, clearError: true);
     try {
       final userRepo = _ref.read(firestoreUserRepositoryProvider);
       var appUser = await userRepo.getUser(firebaseUser.uid);
@@ -61,7 +77,7 @@ class UserNotifier extends StateNotifier<UserState> {
         appUser = updated;
       }
 
-      state = state.copyWith(appUser: appUser, isLoading: false);
+      state = state.copyWith(appUser: appUser, status: UserLoadStatus.loaded);
 
       if (appUser != null) {
         final notifications = _ref.read(notificationProvider.notifier);
@@ -70,7 +86,10 @@ class UserNotifier extends StateNotifier<UserState> {
         await notifications.flushPendingNavigation();
       }
     } catch (e) {
-      state = state.copyWith(isLoading: false, error: e.toString());
+      state = state.copyWith(
+        status: UserLoadStatus.loaded,
+        error: e.toString(),
+      );
     }
   }
 
@@ -82,7 +101,7 @@ class UserNotifier extends StateNotifier<UserState> {
       return;
     }
 
-    state = state.copyWith(isLoading: true, clearError: true);
+    state = state.copyWith(status: UserLoadStatus.loading, clearError: true);
     try {
       final userRepo = _ref.read(firestoreUserRepositoryProvider);
 
@@ -99,7 +118,8 @@ class UserNotifier extends StateNotifier<UserState> {
       await userRepo.createUser(appUser);
       dev.log('createProfile: user doc created', name: 'UserNotifier');
 
-      state = state.copyWith(appUser: appUser, isLoading: false);
+      state = state.copyWith(appUser: appUser, status: UserLoadStatus.loaded);
+      _ref.invalidate(userByIdProvider(appUser.id));
 
       final notifications = _ref.read(notificationProvider.notifier);
       await notifications.initialize();
@@ -112,7 +132,10 @@ class UserNotifier extends StateNotifier<UserState> {
         error: e,
         stackTrace: st,
       );
-      state = state.copyWith(isLoading: false, error: e.toString());
+      state = state.copyWith(
+        status: UserLoadStatus.loaded,
+        error: e.toString(),
+      );
     }
   }
 
@@ -121,16 +144,21 @@ class UserNotifier extends StateNotifier<UserState> {
     final current = state.appUser;
     if (current == null) return;
 
-    state = state.copyWith(isLoading: true, clearError: true);
+    state = state.copyWith(status: UserLoadStatus.loading, clearError: true);
     try {
       final userRepo = _ref.read(firestoreUserRepositoryProvider);
       final updated = current.copyWith(
         displayName: displayName ?? current.displayName,
       );
       await userRepo.updateUser(updated);
-      state = state.copyWith(appUser: updated, isLoading: false);
+      state = state.copyWith(appUser: updated, status: UserLoadStatus.loaded);
+      // Drop the cached lookup so other screens see the new profile.
+      _ref.invalidate(userByIdProvider(updated.id));
     } catch (e) {
-      state = state.copyWith(isLoading: false, error: e.toString());
+      state = state.copyWith(
+        status: UserLoadStatus.loaded,
+        error: e.toString(),
+      );
     }
   }
 }
@@ -140,11 +168,36 @@ class UserNotifier extends StateNotifier<UserState> {
 // ---------------------------------------------------------------------------
 
 final userProvider = StateNotifierProvider<UserNotifier, UserState>((ref) {
-  return UserNotifier(ref);
+  final notifier = UserNotifier(ref);
+  // Keep the profile in sync with the signed-in Firebase user: clear it on
+  // sign-out, (re)load it when a different user signs in.
+  ref.listen(authProvider.select((state) => state.user?.uid), (previous, next) {
+    if (next == null) {
+      notifier.reset();
+    } else if (previous != next) {
+      unawaited(notifier.loadCurrentUser());
+    }
+  });
+  return notifier;
 });
 
-/// Looks up any user by their ID. Returns their AppUser (with displayName).
-final userByIdProvider = FutureProvider.family<AppUser?, String>((ref, userId) {
+/// How long a resolved user lookup stays cached after its last listener goes
+/// away. Bounded so remote profile edits eventually propagate.
+const _kUserCacheDuration = Duration(minutes: 15);
+
+/// Looks up any user by their ID. Single cached source for user lookups
+/// (conversation titles, call screens, etc.). Successful lookups are kept
+/// alive for [_kUserCacheDuration]; failures are not cached.
+final userByIdProvider = FutureProvider.autoDispose.family<AppUser?, String>((
+  ref,
+  userId,
+) async {
   final userRepo = ref.watch(firestoreUserRepositoryProvider);
-  return userRepo.getUser(userId);
+  final user = await userRepo.getUser(userId);
+
+  final link = ref.keepAlive();
+  final timer = Timer(_kUserCacheDuration, link.close);
+  ref.onDispose(timer.cancel);
+
+  return user;
 });

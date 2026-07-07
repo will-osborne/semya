@@ -284,6 +284,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String get languageSubtitle => 'English, Русский';
 
   @override
+  String get developer => 'Developer';
+
+  @override
+  String get callDebugLogs => 'Call debug logs';
+
+  @override
+  String get callDebugLogsSubtitle => 'ICE candidates, TURN, connection state';
+
+  @override
   String get signOut => 'Sign Out';
 
   @override
@@ -302,6 +311,14 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get openSettingsAction => 'Open Settings';
+
+  @override
+  String get callMicrophonePermissionRequired =>
+      'Microphone access is required for calls. Enable it in Settings.';
+
+  @override
+  String get notificationsDisabledCallsWarning =>
+      'Notifications are disabled — incoming calls will not be shown. Enable notifications in Settings.';
 
   @override
   String get microphonePermissionRequired =>

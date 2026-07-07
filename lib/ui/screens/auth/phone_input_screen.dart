@@ -170,7 +170,9 @@ class _PhoneInputScreenState extends ConsumerState<PhoneInputScreen> {
                       if (value == null || value.trim().isEmpty) {
                         return l10n.emailEmpty;
                       }
-                      final emailPattern = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
+                      final emailPattern = RegExp(
+                        r'^[^@\s]+@[^@\s]+\.[^@\s]+$',
+                      );
                       if (!emailPattern.hasMatch(value.trim())) {
                         return l10n.emailInvalid;
                       }

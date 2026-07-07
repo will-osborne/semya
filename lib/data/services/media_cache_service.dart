@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 
@@ -37,6 +38,25 @@ class MediaCacheService {
   /// (0.0 to 1.0) and the final [File].
   Stream<FileResponse> getFileStream(String url) {
     return _cacheManager.getFileStream(url, withProgress: true);
+  }
+
+  /// Stores raw [bytes] in the cache keyed by [url] and returns the cached
+  /// [File]. Used when the bytes were fetched out-of-band (e.g. via the
+  /// Firebase Storage SDK) so subsequent [getCachedFile] calls hit disk
+  /// instead of re-downloading.
+  Future<File> putFile(
+    String url,
+    Uint8List bytes, {
+    String fileExtension = 'jpg',
+  }) {
+    return _cacheManager.putFile(
+      url,
+      bytes,
+      // Match the cache config's stale period so out-of-band entries don't
+      // outlive HTTP-downloaded ones.
+      maxAge: const Duration(days: 7),
+      fileExtension: fileExtension,
+    );
   }
 
   /// Removes a specific file from the cache.

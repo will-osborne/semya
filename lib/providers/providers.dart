@@ -1,6 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'package:semya/data/datasources/local/database_helper.dart';
 import 'package:semya/data/datasources/local/secure_storage_service.dart';
 import 'package:semya/data/repositories/firebase_auth_repository.dart';
 import 'package:semya/data/repositories/firestore_call_repository.dart';
@@ -51,11 +50,6 @@ final firestoreCallRepositoryProvider = Provider<CallRepository>((ref) {
 
 final secureStorageServiceProvider = Provider<SecureStorageService>((ref) {
   return SecureStorageService();
-});
-
-final databaseHelperProvider = Provider<DatabaseHelper>((ref) {
-  final secureStorage = ref.watch(secureStorageServiceProvider);
-  return DatabaseHelper(secureStorageService: secureStorage);
 });
 
 // ---------------------------------------------------------------------------

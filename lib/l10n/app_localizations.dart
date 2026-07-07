@@ -608,6 +608,24 @@ abstract class AppLocalizations {
   /// **'English, Русский'**
   String get languageSubtitle;
 
+  /// No description provided for @developer.
+  ///
+  /// In en, this message translates to:
+  /// **'Developer'**
+  String get developer;
+
+  /// No description provided for @callDebugLogs.
+  ///
+  /// In en, this message translates to:
+  /// **'Call debug logs'**
+  String get callDebugLogs;
+
+  /// No description provided for @callDebugLogsSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'ICE candidates, TURN, connection state'**
+  String get callDebugLogsSubtitle;
+
   /// No description provided for @signOut.
   ///
   /// In en, this message translates to:
@@ -643,6 +661,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Open Settings'**
   String get openSettingsAction;
+
+  /// No description provided for @callMicrophonePermissionRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Microphone access is required for calls. Enable it in Settings.'**
+  String get callMicrophonePermissionRequired;
+
+  /// No description provided for @notificationsDisabledCallsWarning.
+  ///
+  /// In en, this message translates to:
+  /// **'Notifications are disabled — incoming calls will not be shown. Enable notifications in Settings.'**
+  String get notificationsDisabledCallsWarning;
 
   /// No description provided for @microphonePermissionRequired.
   ///

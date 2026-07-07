@@ -11,6 +11,10 @@ class FirestoreCallRepository implements CallRepository {
   static const String _collection = 'calls';
   static const String _candidatesSubcollection = 'candidates';
 
+  // Ringing calls older than this are considered stale (crash/network
+  // leftovers) and never surfaced as incoming.
+  static const _staleRingThreshold = Duration(seconds: 60);
+
   CollectionReference<Map<String, dynamic>> get _callsCollection =>
       _firestore.collection(_collection);
 
@@ -93,7 +97,7 @@ class FirestoreCallRepository implements CallRepository {
     // Only consider calls created within the last 60 seconds to avoid
     // showing stale ringing calls caused by crashes or network errors.
     final cutoff = Timestamp.fromDate(
-      DateTime.now().subtract(const Duration(seconds: 60)),
+      DateTime.now().subtract(_staleRingThreshold),
     );
 
     return _callsCollection
@@ -106,8 +110,41 @@ class FirestoreCallRepository implements CallRepository {
         .map((snapshot) {
           if (snapshot.docs.isEmpty) return null;
           final doc = snapshot.docs.first;
-          return Call.fromJson(_withId(doc.id, doc.data()));
+          final call = Call.fromJson(_withId(doc.id, doc.data()));
+          // The query cutoff above is computed once, at subscription time,
+          // and this stream lives for the whole session — so on its own the
+          // filter decays to "created since app start". Re-check staleness
+          // against the current clock on every emit.
+          final expiry = DateTime.now().subtract(_staleRingThreshold);
+          if (call.createdAt.isBefore(expiry)) return null;
+          return call;
         });
+  }
+
+  @override
+  Future<Call?> getRingingCallBetween({
+    required String callerId,
+    required String calleeId,
+  }) async {
+    // Reuses the existing (calleeId, status, createdAt) composite index from
+    // watchIncomingCalls; callerId is filtered client-side to avoid needing
+    // another composite index for what is at most a handful of documents.
+    final cutoff = Timestamp.fromDate(
+      DateTime.now().subtract(_staleRingThreshold),
+    );
+
+    final snapshot = await _callsCollection
+        .where('calleeId', isEqualTo: calleeId)
+        .where('status', isEqualTo: CallStatus.ringing.name)
+        .where('createdAt', isGreaterThan: cutoff)
+        .orderBy('createdAt', descending: true)
+        .get();
+
+    for (final doc in snapshot.docs) {
+      final call = Call.fromJson(_withId(doc.id, doc.data()));
+      if (call.callerId == callerId) return call;
+    }
+    return null;
   }
 
   @override

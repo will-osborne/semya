@@ -284,6 +284,16 @@ class AppLocalizationsRu extends AppLocalizations {
   String get languageSubtitle => 'English, Русский';
 
   @override
+  String get developer => 'Для разработчиков';
+
+  @override
+  String get callDebugLogs => 'Журналы отладки звонков';
+
+  @override
+  String get callDebugLogsSubtitle =>
+      'ICE-кандидаты, TURN, состояние соединения';
+
+  @override
   String get signOut => 'Выйти';
 
   @override
@@ -302,6 +312,14 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get openSettingsAction => 'Открыть настройки';
+
+  @override
+  String get callMicrophonePermissionRequired =>
+      'Для звонков необходим доступ к микрофону. Включите его в настройках.';
+
+  @override
+  String get notificationsDisabledCallsWarning =>
+      'Уведомления отключены — входящие звонки не будут отображаться. Включите уведомления в настройках.';
 
   @override
   String get microphonePermissionRequired =>

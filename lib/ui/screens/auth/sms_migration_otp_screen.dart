@@ -40,16 +40,15 @@ class _SmsMigrationOtpScreenState extends ConsumerState<SmsMigrationOtpScreen> {
     final verificationId = _verificationId;
     if (verificationId == null || verificationId.isEmpty) {
       final l10n = AppLocalizations.of(context)!;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(l10n.verificationExpired)),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(l10n.verificationExpired)));
       return;
     }
 
-    await ref.read(authProvider.notifier).signInWithSmsCode(
-      verificationId: verificationId,
-      smsCode: code,
-    );
+    await ref
+        .read(authProvider.notifier)
+        .signInWithSmsCode(verificationId: verificationId, smsCode: code);
   }
 
   @override

@@ -53,7 +53,16 @@ class NotificationState {
 // ---------------------------------------------------------------------------
 
 class NotificationNotifier extends StateNotifier<NotificationState> {
-  NotificationNotifier(this._ref) : super(const NotificationState());
+  NotificationNotifier(this._ref) : super(const NotificationState()) {
+    // A token obtained (or refreshed) before auth was ready is held in state;
+    // flush it to Firestore as soon as a user becomes available.
+    _ref.listen<AuthState>(authProvider, (previous, next) {
+      final uid = next.user?.uid;
+      if (uid != null && previous?.user?.uid != uid) {
+        unawaited(syncTokenIfPossible());
+      }
+    });
+  }
 
   final Ref _ref;
   StreamSubscription<String>? _tokenRefreshSub;
@@ -209,17 +218,36 @@ class NotificationNotifier extends StateNotifier<NotificationState> {
   Future<void> _onTokenRefresh(String newToken) async {
     final oldToken = state.token;
 
-    // Remove old token, add new one.
-    if (oldToken != null) {
-      final userId = _ref.read(authProvider).user?.uid;
-      if (userId != null) {
+    // Keep the new token in state even when auth is not ready yet: the auth
+    // listener in the constructor flushes it via syncTokenIfPossible once a
+    // user is available.
+    state = state.copyWith(token: newToken);
+
+    final userId = _ref.read(authProvider).user?.uid;
+    if (userId == null) {
+      dev.log(
+        'FCM token refreshed before auth ready — stored pending sync',
+        name: 'NotificationNotifier',
+      );
+      return;
+    }
+
+    // Best-effort removal of the old token: failure must never prevent the
+    // new token from being stored.
+    if (oldToken != null && oldToken != newToken) {
+      try {
         final userRepo = _ref.read(firestoreUserRepositoryProvider);
         await userRepo.removeFcmToken(userId, oldToken);
+      } catch (e) {
+        dev.log(
+          'Failed to remove old FCM token: $e',
+          name: 'NotificationNotifier',
+          error: e,
+        );
       }
     }
 
     await _storeToken(newToken);
-    state = state.copyWith(token: newToken);
     dev.log('FCM token refreshed', name: 'NotificationNotifier');
   }
 

@@ -17,6 +17,11 @@ import 'package:semya/domain/repositories/call_repository.dart';
 import 'package:semya/providers/auth_provider.dart';
 import 'package:semya/providers/providers.dart';
 
+/// Error message set when microphone permission is denied. The
+/// IncomingCallOverlay matches on this value to show a localized, actionable
+/// snackbar (with an Open Settings shortcut) instead of a generic failure.
+const kCallMicPermissionError = 'Microphone permission required';
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -111,6 +116,13 @@ class CallNotifier extends StateNotifier<CallState> {
   bool _isCleaningUp = false;
   bool _durationTimerStarted = false;
 
+  // One-shot guard for the Firestore status=connected transition (stop dial
+  // tone, configure audio, notify CallKit). Separate from
+  // _durationTimerStarted, which is owned by the WebRTC connection state —
+  // without its own flag this block re-ran on every call-doc update (e.g.
+  // video toggles) between Firestore-connected and ICE-connected.
+  bool _connectedHandled = false;
+
   // Guards concurrent setRemoteDescription calls from overlapping stream events.
   bool _settingDescription = false;
 
@@ -122,6 +134,19 @@ class CallNotifier extends StateNotifier<CallState> {
 
   // Remote candidates buffered while setRemoteDescription hasn't completed yet.
   final List<RTCIceCandidate> _pendingRemoteCandidates = [];
+
+  // Remote candidates whose addIceCandidate failed (e.g. new-generation
+  // candidates rejected against the pre-restart ufrag during an ICE restart).
+  // Re-attempted after every setRemoteDescription — their ids stay in
+  // _processedCandidateIds, so without this list they would never be retried.
+  final List<RTCIceCandidate> _failedRemoteCandidates = [];
+
+  // Caller-side: true from the moment an ICE restart offer is created until
+  // the callee's restart answer is applied. New-generation candidates arriving
+  // in that window must be buffered — adding them immediately fails silently
+  // against the old ufrag. (The callee side is covered by _settingDescription
+  // plus the _failedRemoteCandidates retry above.)
+  bool _iceRestartBuffering = false;
 
   // Serialised queue for local ICE candidate Firestore writes.
   final List<(String, IceCandidate)> _localCandidateQueue = [];
@@ -164,8 +189,33 @@ class CallNotifier extends StateNotifier<CallState> {
 
     _currentUserId = currentUserId;
 
+    // Glare: both users dialing each other at once creates two competing
+    // docs — each side's activeCall suppresses the other's ring and both
+    // time out. If the other party is already ringing us, answer their call
+    // instead of creating a new one.
+    try {
+      final existing = await _callRepository.getRingingCallBetween(
+        callerId: calleeId,
+        calleeId: currentUserId,
+      );
+      if (existing != null) {
+        CallDebugLog.add(
+          'Glare detected: answering incoming call ${existing.id} from '
+          '$calleeId instead of dialing',
+          name: 'Call',
+        );
+        await answerCall(existing.id);
+        return;
+      }
+    } catch (e) {
+      CallDebugLog.add(
+        'Glare check failed, proceeding with outgoing call: $e',
+        name: 'Call',
+      );
+    }
+
     if (!await _ensureMicrophonePermission()) {
-      state = state.copyWith(error: 'Microphone permission required');
+      state = state.copyWith(error: kCallMicPermissionError);
       return;
     }
 
@@ -208,7 +258,10 @@ class CallNotifier extends StateNotifier<CallState> {
 
       final turnCredentials = await turnFuture;
       CallDebugLog.add('webRtcService.initialize() starting', name: 'Call');
-      await _webRtcService.initialize(iceServers: turnCredentials);
+      await _webRtcService.initialize(
+        iceServers: turnCredentials,
+        captureVideo: await Permission.camera.isGranted,
+      );
       CallDebugLog.add('webRtcService.initialize() done', name: 'Call');
 
       // Subscribe to local ICE candidates BEFORE creating the offer so no
@@ -270,10 +323,18 @@ class CallNotifier extends StateNotifier<CallState> {
     if (!await _ensureMicrophonePermission()) {
       await _endCallWithError(callId);
       await _cleanup(callId: callId);
-      state = state.copyWith(error: 'Microphone permission required');
+      state = state.copyWith(error: kCallMicPermissionError);
       return;
     }
 
+    await _attemptAnswerCall(callId, uid, attempt: 1);
+  }
+
+  Future<void> _attemptAnswerCall(
+    String callId,
+    String uid, {
+    required int attempt,
+  }) async {
     _resetSessionState();
     state = state.copyWith(isConnecting: true, clearError: true);
 
@@ -287,7 +348,10 @@ class CallNotifier extends StateNotifier<CallState> {
 
       final turnCredentials = await turnFuture;
       CallDebugLog.add('answerCall: webRtcService.initialize() starting', name: 'Call');
-      await _webRtcService.initialize(iceServers: turnCredentials);
+      await _webRtcService.initialize(
+        iceServers: turnCredentials,
+        captureVideo: await Permission.camera.isGranted,
+      );
       CallDebugLog.add('answerCall: webRtcService.initialize() done', name: 'Call');
 
       // Subscribe to local ICE candidates BEFORE creating the answer.
@@ -355,21 +419,57 @@ class CallNotifier extends StateNotifier<CallState> {
         }),
       );
     } on TimeoutException {
+      // The offer never arrived — retrying would just wait on a dead call.
       CallDebugLog.add('answerCall timed out waiting for offer', name: 'Call');
       await _endCallWithError(callId);
       await _cleanup(callId: callId);
       state = const CallState(error: 'Call timed out');
     } on CallSetupException catch (e, st) {
-      CallDebugLog.add('answerCall setup failed: ${e.message} cause=${e.cause}\n$st', name: 'Call');
+      CallDebugLog.add(
+        'answerCall setup failed (attempt $attempt): ${e.message} '
+        'cause=${e.cause}\n$st',
+        name: 'Call',
+      );
+      if (await _retryAnswerAfterFailure(callId, uid, attempt)) return;
       await _endCallWithError(callId);
       await _cleanup(callId: callId);
       state = CallState(error: e.message);
     } catch (e, st) {
-      CallDebugLog.add('answerCall failed: $e\n$st', name: 'Call');
+      CallDebugLog.add('answerCall failed (attempt $attempt): $e\n$st', name: 'Call');
+      if (await _retryAnswerAfterFailure(callId, uid, attempt)) return;
       await _endCallWithError(callId);
       await _cleanup(callId: callId);
       state = const CallState(error: 'Failed to answer call');
     }
+  }
+
+  /// One retry for transient callee-side setup failures — without it a single
+  /// hiccup (TURN fetch, getUserMedia race, Firestore blip) ends the call for
+  /// BOTH sides. Returns true when a retry was started.
+  Future<bool> _retryAnswerAfterFailure(
+    String callId,
+    String uid,
+    int attempt,
+  ) async {
+    if (attempt >= 2) return false;
+
+    // Only retry while the call is still answerable.
+    try {
+      final call = await _callRepository.getCall(callId);
+      if (call == null || call.status != CallStatus.ringing) return false;
+    } catch (_) {
+      return false;
+    }
+
+    CallDebugLog.add(
+      'answerCall: retrying setup (attempt ${attempt + 1})',
+      name: 'Call',
+    );
+    // Tear down the failed session but keep the native call UI alive.
+    await _cleanup(callId: callId, dismissCallKit: false);
+    state = const CallState();
+    await _attemptAnswerCall(callId, uid, attempt: attempt + 1);
+    return true;
   }
 
   /// Loads an existing call into state (e.g. when navigating from a
@@ -536,8 +636,13 @@ class CallNotifier extends StateNotifier<CallState> {
                 call.restartAnswer!['type'] as String,
               ),
             );
+            // Restart negotiation complete — release the candidate buffer.
+            _iceRestartBuffering = false;
             await _flushPendingCandidates();
-            CallDebugLog.add('ICE restart: applied callee answer', name: 'Call');
+            CallDebugLog.add(
+              'ICE restart: applied callee answer, buffered candidates flushed',
+              name: 'Call',
+            );
           } catch (e) {
             CallDebugLog.add('ICE restart: failed to apply answer: $e', name: 'Call');
             // Restore so we can retry on the next update.
@@ -561,6 +666,10 @@ class CallNotifier extends StateNotifier<CallState> {
               ),
             );
             final answer = await _webRtcService.createAnswer();
+            // Re-attempt candidates buffered/failed while the restart offer
+            // was being applied — new-generation candidates that arrived
+            // before this setRemoteDescription failed against the old ufrag.
+            await _flushPendingCandidates();
             await _retryWrite(
               operation: 'acknowledgeIceRestart',
               action: () => _callRepository.acknowledgeIceRestart(call.id, {
@@ -568,7 +677,11 @@ class CallNotifier extends StateNotifier<CallState> {
                 'type': answer.type,
               }),
             );
-            CallDebugLog.add('ICE restart: acknowledged caller offer', name: 'Call');
+            CallDebugLog.add(
+              'ICE restart: acknowledged caller offer, buffered candidates '
+              'flushed',
+              name: 'Call',
+            );
           } catch (e) {
             CallDebugLog.add('ICE restart: failed to process offer: $e', name: 'Call');
             // Clear so we can retry if the next update brings the same offer.
@@ -592,7 +705,11 @@ class CallNotifier extends StateNotifier<CallState> {
     // ── Call connected — configure audio once ─────────────────────────────
     // Duration timer is NOT started here; it starts when the WebRTC peer
     // connection reaches Connected state so we only count media-flowing time.
-    if (call.status == CallStatus.connected && !_durationTimerStarted) {
+    // _connectedHandled is a dedicated one-shot flag: keying off
+    // _durationTimerStarted re-ran this block on every call-doc update (e.g.
+    // a video toggle write) until ICE actually connected.
+    if (call.status == CallStatus.connected && !_connectedHandled) {
+      _connectedHandled = true;
       _ringTimeout?.cancel();
       _ringTimeout = null;
       await _callSoundService.stop();
@@ -625,28 +742,47 @@ class CallNotifier extends StateNotifier<CallState> {
         candidate.sdpMLineIndex,
       );
 
-      if (_remoteDescriptionSet && !_settingDescription) {
+      if (_remoteDescriptionSet && !_settingDescription && !_iceRestartBuffering) {
         _addIceCandidateSafe(rtcCandidate);
       } else {
         // Buffer until remote description is ready — adding candidates before
-        // setRemoteDescription (or during one) causes silent WebRTC failures.
+        // setRemoteDescription (or during one, or while an ICE restart is
+        // being negotiated) causes silent WebRTC failures.
         _pendingRemoteCandidates.add(rtcCandidate);
       }
     }
   }
 
   Future<void> _flushPendingCandidates() async {
-    for (final candidate in _pendingRemoteCandidates) {
+    final toAdd = <RTCIceCandidate>[
+      ..._failedRemoteCandidates,
+      ..._pendingRemoteCandidates,
+    ];
+    _failedRemoteCandidates.clear();
+    _pendingRemoteCandidates.clear();
+    if (toAdd.isEmpty) return;
+    CallDebugLog.add(
+      'Flushing ${toAdd.length} buffered/retried remote candidates',
+      name: 'Call',
+    );
+    for (final candidate in toAdd) {
       await _addIceCandidateSafe(candidate);
     }
-    _pendingRemoteCandidates.clear();
   }
 
   Future<void> _addIceCandidateSafe(RTCIceCandidate candidate) async {
     try {
       await _webRtcService.addIceCandidate(candidate);
     } catch (e) {
-      CallDebugLog.add('Failed to add ICE candidate: $e', name: 'Call');
+      // Keep the candidate for re-attempt after the next setRemoteDescription
+      // — during an ICE restart, new-generation candidates fail against the
+      // old ufrag but become valid once the restart SDP is applied. The id
+      // stays in _processedCandidateIds, so this list is the only retry path.
+      _failedRemoteCandidates.add(candidate);
+      CallDebugLog.add(
+        'Failed to add ICE candidate (queued for retry): $e',
+        name: 'Call',
+      );
     }
   }
 
@@ -660,6 +796,16 @@ class CallNotifier extends StateNotifier<CallState> {
       _disconnectGraceTimer?.cancel();
       _disconnectGraceTimer = null;
       _iceRestarting = false;
+      // Safety net: if the connection recovered without (or despite) a
+      // pending restart answer, stop buffering and drain anything queued.
+      if (_iceRestartBuffering ||
+          _failedRemoteCandidates.isNotEmpty ||
+          _pendingRemoteCandidates.isNotEmpty) {
+        _iceRestartBuffering = false;
+        if (_remoteDescriptionSet) {
+          unawaited(_flushPendingCandidates());
+        }
+      }
       state = state.copyWith(isConnecting: false);
 
       if (!_durationTimerStarted) {
@@ -700,6 +846,10 @@ class CallNotifier extends StateNotifier<CallState> {
     if (_isCleaningUp) return;
     try {
       CallDebugLog.add('Attempting ICE restart for $callId', name: 'Call');
+      // Buffer remote candidates until the callee's restart answer is applied
+      // — the callee's new-generation candidates would otherwise be added
+      // against the pre-restart ufrag and dropped.
+      _iceRestartBuffering = true;
       final offer = await _webRtcService.createRestartOffer();
 
       // Track the SDP we sent so _onCallUpdate can match the callee's answer
@@ -717,6 +867,11 @@ class CallNotifier extends StateNotifier<CallState> {
       CallDebugLog.add('ICE restart failed: $e', name: 'Call');
       _pendingRestartOfferSdp = null;
       _iceRestarting = false;
+      // Restart aborted — stop buffering and add anything queued meanwhile.
+      _iceRestartBuffering = false;
+      if (_remoteDescriptionSet) {
+        unawaited(_flushPendingCandidates());
+      }
     }
   }
 
@@ -852,10 +1007,17 @@ class CallNotifier extends StateNotifier<CallState> {
     }
   }
 
-  /// Ensures microphone permission before starting WebRTC. Camera is optional.
-  /// On iOS, CallKit manages the audio session so we skip the permission check.
+  /// Ensures microphone permission before starting WebRTC — on iOS too:
+  /// CallKit manages the audio *session*, but capture still needs the mic
+  /// permission, and returning true unconditionally turned a denial into a
+  /// generic "Failed to start call" later in setup.
+  ///
+  /// Camera is requested here (point of first potential use) rather than at
+  /// video-toggle time because the video m-line must be negotiated with a
+  /// real track at call setup (see WebRtcService.initialize) — a camera
+  /// permission granted only mid-call could not be used until the next call.
+  /// Camera denial is fine: the call proceeds audio-only.
   Future<bool> _ensureMicrophonePermission() async {
-    if (Platform.isIOS) return true;
     final statuses = await [Permission.microphone, Permission.camera].request();
     return statuses[Permission.microphone]?.isGranted ?? false;
   }
@@ -922,22 +1084,25 @@ class CallNotifier extends StateNotifier<CallState> {
   void _resetSessionState() {
     _isCleaningUp = false;
     _durationTimerStarted = false;
+    _connectedHandled = false;
     _remoteDescriptionSet = false;
     _settingDescription = false;
     _iceRestarting = false;
+    _iceRestartBuffering = false;
     _pendingRestartOfferSdp = null;
     _lastProcessedRestartSdp = null;
     _processedCandidateIds.clear();
     _pendingRemoteCandidates.clear();
+    _failedRemoteCandidates.clear();
   }
 
-  Future<void> _cleanup({String? callId}) async {
+  Future<void> _cleanup({String? callId, bool dismissCallKit = true}) async {
     if (_isCleaningUp) return;
     _isCleaningUp = true;
 
     try {
       final activeCallId = callId ?? state.activeCall?.id;
-      if (activeCallId != null) {
+      if (activeCallId != null && dismissCallKit) {
         await _callKitService.endCall(activeCallId);
       }
 
@@ -964,10 +1129,13 @@ class CallNotifier extends StateNotifier<CallState> {
       _localCandidateQueue.clear();
       _processedCandidateIds.clear();
       _pendingRemoteCandidates.clear();
+      _failedRemoteCandidates.clear();
 
       _remoteDescriptionSet = false;
       _settingDescription = false;
       _iceRestarting = false;
+      _iceRestartBuffering = false;
+      _connectedHandled = false;
       _pendingRestartOfferSdp = null;
       _lastProcessedRestartSdp = null;
 
@@ -1022,8 +1190,8 @@ final callProvider = StateNotifierProvider<CallNotifier, CallState>((ref) {
 });
 
 final incomingCallProvider = StreamProvider<Call?>((ref) {
-  final authState = ref.watch(authProvider);
-  final userId = authState.user?.uid;
+  // Only the uid matters — don't resubscribe when transient auth flags flip.
+  final userId = ref.watch(authProvider.select((state) => state.user?.uid));
   if (userId == null) return const Stream.empty();
 
   final callRepository = ref.watch(firestoreCallRepositoryProvider);

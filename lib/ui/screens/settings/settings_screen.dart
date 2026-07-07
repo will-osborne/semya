@@ -78,7 +78,7 @@ class SettingsScreen extends ConsumerWidget {
                       icon: const Icon(Icons.edit_outlined),
                       tooltip: l10n.editProfile,
                       onPressed: () {
-                        context.push(AppRoutes.profileSetup);
+                        context.push(AppRoutes.profileSetupEdit);
                       },
                     ),
                   ],
@@ -94,7 +94,7 @@ class SettingsScreen extends ConsumerWidget {
             icon: Icons.person_outline,
             title: l10n.profile,
             subtitle: l10n.displayNamePhoto,
-            onTap: () => context.push(AppRoutes.profileSetup),
+            onTap: () => context.push(AppRoutes.profileSetupEdit),
           ),
 
           // Section header
@@ -126,12 +126,12 @@ class SettingsScreen extends ConsumerWidget {
           ),
 
           // Section header
-          _SectionHeader(label: 'Developer'),
+          _SectionHeader(label: l10n.developer),
 
           _SettingsTile(
             icon: Icons.bug_report_outlined,
-            title: 'Call Debug Logs',
-            subtitle: 'ICE candidates, TURN, connection state',
+            title: l10n.callDebugLogs,
+            subtitle: l10n.callDebugLogsSubtitle,
             onTap: () => context.push(AppRoutes.callDebug),
           ),
 
@@ -161,37 +161,32 @@ class SettingsScreen extends ConsumerWidget {
 
   void _showLanguagePicker(BuildContext context, WidgetRef ref) {
     final l10n = AppLocalizations.of(context)!;
-    final currentLocale = ref.read(localeProvider);
+    final selectedCode = ref.read(localeProvider)?.languageCode ?? 'en';
 
     showDialog<void>(
       context: context,
       builder: (context) => SimpleDialog(
         title: Text(l10n.language),
         children: [
-          ListTile(
-            title: const Text('English'),
-            leading: Radio<String>(
-              value: 'en',
-              groupValue: currentLocale?.languageCode ?? 'en',
-              onChanged: (_) {},
+          for (final (code, label) in const [
+            ('en', 'English'),
+            ('ru', 'Русский'),
+          ])
+            ListTile(
+              title: Text(label),
+              leading: Icon(
+                selectedCode == code
+                    ? Icons.radio_button_checked
+                    : Icons.radio_button_off,
+                color: selectedCode == code
+                    ? Theme.of(context).colorScheme.primary
+                    : null,
+              ),
+              onTap: () {
+                ref.read(localeProvider.notifier).setLocale(Locale(code));
+                Navigator.of(context).pop();
+              },
             ),
-            onTap: () {
-              ref.read(localeProvider.notifier).setLocale(const Locale('en'));
-              Navigator.of(context).pop();
-            },
-          ),
-          ListTile(
-            title: const Text('Русский'),
-            leading: Radio<String>(
-              value: 'ru',
-              groupValue: currentLocale?.languageCode ?? 'en',
-              onChanged: (_) {},
-            ),
-            onTap: () {
-              ref.read(localeProvider.notifier).setLocale(const Locale('ru'));
-              Navigator.of(context).pop();
-            },
-          ),
         ],
       ),
     );

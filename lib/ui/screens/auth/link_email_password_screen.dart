@@ -31,10 +31,12 @@ class _LinkEmailPasswordScreenState
   Future<void> _linkCredentials() async {
     if (!_formKey.currentState!.validate()) return;
 
-    await ref.read(authProvider.notifier).linkEmailPasswordToCurrentUser(
-      email: _emailController.text.trim(),
-      password: _passwordController.text,
-    );
+    await ref
+        .read(authProvider.notifier)
+        .linkEmailPasswordToCurrentUser(
+          email: _emailController.text.trim(),
+          password: _passwordController.text,
+        );
   }
 
   @override
@@ -44,7 +46,8 @@ class _LinkEmailPasswordScreenState
     final colorScheme = Theme.of(context).colorScheme;
 
     ref.listen<AuthState>(authProvider, (previous, next) {
-      if (next.isAuthenticated && ref.read(authProvider.notifier).hasPasswordProvider) {
+      if (next.isAuthenticated &&
+          ref.read(authProvider.notifier).hasPasswordProvider) {
         context.go(AppRoutes.home);
       }
       if (next.error != null && next.error != previous?.error) {

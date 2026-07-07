@@ -1,4 +1,4 @@
-import {onDocumentCreated} from "firebase-functions/v2/firestore";
+import {onDocumentCreated, onDocumentUpdated} from "firebase-functions/v2/firestore";
 import {onCall, HttpsError} from "firebase-functions/v2/https";
 import {onSchedule} from "firebase-functions/v2/scheduler";
 import {defineSecret} from "firebase-functions/params";
@@ -74,7 +74,10 @@ async function sendToTokens(
     tokens,
     notification: {title, body},
     data,
-    android: {priority: "high"},
+    android: {
+      priority: "high",
+      notification: {channelId: "semya_messages", sound: "default"},
+    },
     apns: {
       payload: {aps: {sound: "default", contentAvailable: true}},
     },
@@ -82,6 +85,20 @@ async function sendToTokens(
 
   // Clean up invalid/expired tokens by overwriting with the valid subset.
   // Using arrayRemove fails if the Firestore field contains nested arrays.
+  // Cleanup is best-effort: never fail the invocation (which would trigger a
+  // retry and duplicate notifications) because of it.
+  try {
+    await cleanupInvalidTokens(response, tokens, userTokenMap);
+  } catch (err) {
+    console.error("Token cleanup failed (non-fatal):", err);
+  }
+}
+
+async function cleanupInvalidTokens(
+  response: Awaited<ReturnType<typeof messaging.sendEachForMulticast>>,
+  tokens: string[],
+  userTokenMap: Map<string, {userId: string; token: string}>,
+): Promise<void> {
   if (response.failureCount > 0) {
     const invalidCodes = new Set([
       "messaging/invalid-registration-token",
@@ -120,30 +137,73 @@ async function sendToTokens(
 }
 
 // ---------------------------------------------------------------------------
-// APNs client cache — reuses the HTTP/2 connection across warm invocations.
+// APNs client cache — reuses the HTTP/2 connections across warm invocations.
+// One client per environment so a BadDeviceToken retry against the opposite
+// host doesn't tear down the primary connection.
 // ---------------------------------------------------------------------------
 
-let _cachedApnsClient: ApnsClient | null = null;
-let _cachedApnsIsSandbox: boolean | null = null;
+const _cachedApnsClients = new Map<boolean, ApnsClient>();
 
-function getApnsClient(): ApnsClient {
-  const {team, keyId, signingKey, bundleId, isSandbox} = resolveApnsConfig();
-  if (_cachedApnsClient === null || _cachedApnsIsSandbox !== isSandbox) {
-    _cachedApnsClient = new ApnsClient({
+function getApnsClient(isSandbox: boolean): ApnsClient {
+  let client = _cachedApnsClients.get(isSandbox);
+  if (!client) {
+    const {team, keyId, signingKey, bundleId} = resolveApnsConfig();
+    client = new ApnsClient({
       team,
       keyId,
       signingKey,
       defaultTopic: `${bundleId}.voip`,
       host: isSandbox ? Host.development : Host.production,
     });
-    _cachedApnsIsSandbox = isSandbox;
+    _cachedApnsClients.set(isSandbox, client);
   }
-  return _cachedApnsClient;
+  return client;
 }
 
 // ---------------------------------------------------------------------------
 // Helper: send VoIP push via APNs (iOS only)
 // ---------------------------------------------------------------------------
+
+function apnsErrorReason(err: unknown): string {
+  const e = err as {response?: {reason?: string}; reason?: string} | null;
+  return e?.response?.reason ?? e?.reason ?? "unknown";
+}
+
+function apnsEnvName(isSandbox: boolean): string {
+  return isSandbox ? "sandbox" : "production";
+}
+
+async function sendVoipNotification(
+  voipToken: string,
+  data: Record<string, string>,
+): Promise<void> {
+  const {isSandbox} = resolveApnsConfig();
+
+  const buildNotification = () =>
+    new ApnsNotification(voipToken, {
+      type: "voip" as never,
+      priority: 10,
+      data,
+      aps: {
+        "content-available": 1,
+      },
+    });
+
+  try {
+    await getApnsClient(isSandbox).send(buildNotification());
+  } catch (err) {
+    // BadDeviceToken usually means the token belongs to the opposite APNs
+    // environment (sandbox vs production) — retry once against the other host
+    // instead of silently dropping the push.
+    if (apnsErrorReason(err) !== "BadDeviceToken") throw err;
+    await getApnsClient(!isSandbox).send(buildNotification());
+    console.log(
+      `VoIP push got BadDeviceToken on ${apnsEnvName(isSandbox)} APNs but ` +
+      `succeeded on ${apnsEnvName(!isSandbox)} — consider updating the ` +
+      "APNS_SANDBOX secret",
+    );
+  }
+}
 
 async function sendVoipPush(
   voipToken: string,
@@ -151,24 +211,13 @@ async function sendVoipPush(
   callerId: string,
   callerName: string,
 ): Promise<void> {
-  const client = getApnsClient();
-
-  const notification = new ApnsNotification(voipToken, {
-    type: "voip" as never,
-    priority: 10,
-    data: {
-      callId,
-      callerId,
-      callerName,
-      uuid: callId,
-      nameCaller: callerName,
-    },
-    aps: {
-      "content-available": 1,
-    },
+  await sendVoipNotification(voipToken, {
+    callId,
+    callerId,
+    callerName,
+    uuid: callId,
+    nameCaller: callerName,
   });
-
-  await client.send(notification);
   console.log("VoIP push sent successfully");
 }
 
@@ -177,7 +226,10 @@ async function sendVoipPush(
 // ---------------------------------------------------------------------------
 
 export const onNewMessage = onDocumentCreated(
-  "conversations/{conversationId}/messages/{messageId}",
+  {
+    document: "conversations/{conversationId}/messages/{messageId}",
+    retry: true,
+  },
   async (event) => {
     const messageData = event.data?.data();
     if (!messageData) return;
@@ -237,6 +289,9 @@ export const onNewMessage = onDocumentCreated(
       type: "message",
       conversationId,
       senderId,
+      senderName,
+      messageType: (messageData.type as string) ?? "text",
+      preview: messageText.slice(0, 200),
     }, tokenMap);
   },
 );
@@ -382,6 +437,94 @@ export const onNewCall = onDocumentCreated(
 );
 
 // ---------------------------------------------------------------------------
+// Trigger: call leaves "ringing" → tell the callee's devices to stop ringing
+// ---------------------------------------------------------------------------
+// When the caller hangs up (or the call times out / is rejected elsewhere)
+// while the callee's app process is dead, only a push can dismiss the native
+// incoming-call UI. Skipped when the call was answered ("connected") — the
+// callee's own device performed that transition and already knows.
+
+export const onCallUpdated = onDocumentUpdated(
+  {
+    document: "calls/{callId}",
+    secrets: [apnsKeyId, apnsTeamId, apnsSigningKey, apnsBundleId, apnsSandbox],
+  },
+  async (event) => {
+    const before = event.data?.before.data();
+    const after = event.data?.after.data();
+    if (!before || !after) return;
+
+    // Only react when a ringing call stops ringing.
+    if (before.status !== "ringing" || after.status === "ringing") return;
+
+    // Answered by the callee — their UI already reflects the call.
+    if (after.status === "connected") return;
+
+    const callId = event.params.callId;
+    const calleeId = after.calleeId as string;
+    console.log(
+      `onCallUpdated: callId=${callId} status ringing→${after.status}, ` +
+      `notifying callee=${calleeId}`,
+    );
+
+    const calleeSnap = await db.collection("users").doc(calleeId).get();
+    const calleeData = calleeSnap.data();
+    if (!calleeData) {
+      console.log(`onCallUpdated: no user doc for calleeId=${calleeId}`);
+      return;
+    }
+
+    const promises: Promise<unknown>[] = [];
+
+    // 1. iOS: VoIP push so the native CallKit UI dismisses. The client is
+    // required (by Apple) to report the push to CallKit and immediately end
+    // the call with the matching id; ending an already-dismissed id is a no-op.
+    const voipToken = calleeData.voipToken as string | undefined;
+    if (voipToken) {
+      promises.push(
+        sendVoipNotification(voipToken, {
+          type: "call_cancelled",
+          callId,
+          uuid: callId,
+        }).catch((err) => {
+          console.error("Call-cancelled VoIP push failed:", err);
+        }),
+      );
+    }
+
+    // 2. Android: high-priority data-only FCM to dismiss the incoming-call
+    // notification. Best-effort — no token cleanup here (onNewCall handles it).
+    const fcmTokens = (calleeData.fcmTokens as unknown[] ?? []).filter(
+      (t): t is string => typeof t === "string",
+    );
+    if (fcmTokens.length > 0) {
+      promises.push(
+        messaging.sendEachForMulticast({
+          tokens: fcmTokens,
+          data: {
+            type: "call_cancelled",
+            callId,
+          },
+          android: {priority: "high"},
+          apns: {
+            payload: {aps: {contentAvailable: true}},
+          },
+        }).then((resp) => {
+          console.log(
+            `Call-cancelled FCM sent: ${resp.successCount} success, ` +
+            `${resp.failureCount} failures`,
+          );
+        }).catch((err) => {
+          console.error("Call-cancelled FCM push failed:", err);
+        }),
+      );
+    }
+
+    await Promise.all(promises);
+  },
+);
+
+// ---------------------------------------------------------------------------
 // Callable: get short-lived TURN credentials from Cloudflare
 // ---------------------------------------------------------------------------
 
@@ -460,10 +603,10 @@ export const getTurnCredentials = onCall(
 );
 
 // ---------------------------------------------------------------------------
-// Scheduled: clean up stale calls every 2 minutes
+// Scheduled: clean up stale calls every 5 minutes
 // ---------------------------------------------------------------------------
 
-export const cleanupStaleCalls = onSchedule("every 15 minutes", async () => {
+export const cleanupStaleCalls = onSchedule("every 5 minutes", async () => {
   const now = Date.now();
   const ringingCutoff = new Date(now - 60 * 1000); // 60s for ringing
   const connectedCutoff = new Date(now - 4 * 60 * 60 * 1000); // 4h for connected
