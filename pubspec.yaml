@@ -1,7 +1,7 @@
 name: semya
 description: "Семья — family messaging app"
 publish_to: 'none'
-version: 1.0.0+23
+version: 1.0.0+24
 
 environment:
   sdk: ^3.11.0

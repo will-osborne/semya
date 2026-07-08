@@ -51,6 +51,29 @@ import CallKit
     }
   }
 
+  // FlutterAppDelegate (scene-lifecycle engine) overrides respondsToSelector:
+  // for "dynamically added" UIApplicationDelegate selectors and answers ONLY
+  // from its plugin registry, ignoring subclass implementations. That makes
+  // Firebase Auth's phone-verification capability probe (and UIKit's own
+  // delivery checks) believe application:didReceiveRemoteNotification:
+  // fetchCompletionHandler: and application:openURL:options: are unimplemented
+  // even though this class overrides them — breaking SMS sign-in with
+  // "notification-not-forwarded". Claim the selectors we genuinely implement;
+  // dispatch then reaches our overrides, and their super calls still resolve
+  // to the engine's plugin forwarding for non-auth notifications.
+  private static let locallyImplementedDelegateSelectors: Set<Selector> = [
+    #selector(UIApplicationDelegate.application(_:didReceiveRemoteNotification:fetchCompletionHandler:)),
+    #selector(UIApplicationDelegate.application(_:open:options:)),
+  ]
+
+  override func responds(to aSelector: Selector!) -> Bool {
+    if let selector = aSelector,
+       AppDelegate.locallyImplementedDelegateSelectors.contains(selector) {
+      return true
+    }
+    return super.responds(to: aSelector)
+  }
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
@@ -62,14 +85,8 @@ import CallKit
     // The iOS simulator cannot receive APNs verification pushes. Enable
     // Firebase Auth's testing bypass so fictional phone numbers work there.
     Auth.auth().settings!.isAppVerificationDisabledForTesting = true
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-      let proberNotification: [AnyHashable: Any] = [
-        "com.google.firebase.auth": [
-          "warning": "This fake notification should be forwarded to Firebase Auth."
-        ]
-      ]
-      _ = Auth.auth().canHandleNotification(proberNotification)
-    }
+    // (A manual prober feed used to live here. It masked the respondsToSelector
+    // issue handled below — the normal forwarding path now works everywhere.)
     #endif
 
     // Register for VoIP pushes via PushKit so iOS can wake the app
