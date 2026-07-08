@@ -16,8 +16,7 @@ final hasChosenLocaleProvider = Provider<bool>((ref) {
 });
 
 /// Current app locale. Null means no language has been chosen yet.
-final localeProvider =
-    StateNotifierProvider<LocaleNotifier, Locale?>((ref) {
+final localeProvider = StateNotifierProvider<LocaleNotifier, Locale?>((ref) {
   final prefs = ref.watch(sharedPreferencesProvider);
   return LocaleNotifier(prefs);
 });

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -5,10 +7,12 @@ import 'package:intl/intl.dart';
 import 'package:semya/config/constants.dart';
 import 'package:semya/config/router.dart';
 import 'package:semya/domain/entities/conversation.dart';
+import 'package:semya/domain/entities/user.dart';
 import 'package:semya/l10n/app_localizations.dart';
 import 'package:semya/providers/auth_provider.dart';
 import 'package:semya/providers/conversation_provider.dart';
 import 'package:semya/providers/providers.dart';
+import 'package:semya/providers/user_provider.dart';
 
 // ---------------------------------------------------------------------------
 // Home screen
@@ -48,7 +52,10 @@ class HomeScreen extends ConsumerWidget {
         ],
       ),
       body: conversationsAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
+        // Keep showing the current list while the stream resubscribes (e.g.
+        // after app resume) instead of flashing a loading state.
+        skipLoadingOnReload: true,
+        loading: () => const _ConversationListSkeleton(),
         error: (error, _) => Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
@@ -82,7 +89,7 @@ class HomeScreen extends ConsumerWidget {
 }
 
 // ---------------------------------------------------------------------------
-// New chat bottom sheet — search by phone, start direct or group
+// New chat bottom sheet — email search for DM (primary), group chat (secondary)
 // ---------------------------------------------------------------------------
 
 class _NewChatSheet extends ConsumerStatefulWidget {
@@ -91,13 +98,30 @@ class _NewChatSheet extends ConsumerStatefulWidget {
 }
 
 class _NewChatSheetState extends ConsumerState<_NewChatSheet> {
+  static const _debounceDuration = Duration(milliseconds: 300);
+
   final _searchController = TextEditingController();
+  Timer? _debounce;
   String _query = '';
 
   @override
   void dispose() {
+    _debounce?.cancel();
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _onSearchChanged(String value) {
+    _debounce?.cancel();
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) {
+      // Clearing should feel instant.
+      if (_query.isNotEmpty) setState(() => _query = '');
+      return;
+    }
+    _debounce = Timer(_debounceDuration, () {
+      if (mounted && _query != trimmed) setState(() => _query = trimmed);
+    });
   }
 
   @override
@@ -131,50 +155,38 @@ class _NewChatSheetState extends ConsumerState<_NewChatSheet> {
               Text(l10n.newChat, style: theme.textTheme.titleLarge),
               const SizedBox(height: 16),
 
-              // Group chat option
-              ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: colorScheme.secondaryContainer,
-                  child: Icon(
-                    Icons.group_add,
-                    color: colorScheme.onSecondaryContainer,
-                  ),
-                ),
-                title: Text(l10n.newGroup),
-                subtitle: Text(l10n.createGroupConversation),
-                onTap: () {
-                  Navigator.of(context).pop();
-                  context.push(AppRoutes.createGroup);
-                },
-              ),
-              const Divider(height: 24),
-
-              // Phone search
+              // Email search — primary action
               TextField(
                 controller: _searchController,
-                keyboardType: TextInputType.phone,
+                keyboardType: TextInputType.emailAddress,
+                autofocus: true,
                 decoration: InputDecoration(
-                  hintText: l10n.searchByPhoneNumber,
+                  hintText: l10n.searchByEmail,
                   prefixIcon: const Icon(Icons.search),
-                  suffixIcon: _query.isNotEmpty
-                      ? IconButton(
-                          icon: const Icon(Icons.clear),
-                          onPressed: () {
-                            _searchController.clear();
-                            setState(() => _query = '');
-                          },
-                        )
-                      : null,
+                  // Listen to the controller directly so typing doesn't
+                  // rebuild the whole sheet just to toggle the clear button.
+                  suffixIcon: ValueListenableBuilder<TextEditingValue>(
+                    valueListenable: _searchController,
+                    builder: (context, value, _) => value.text.isEmpty
+                        ? const SizedBox.shrink()
+                        : IconButton(
+                            icon: const Icon(Icons.clear),
+                            onPressed: () {
+                              _searchController.clear();
+                              _onSearchChanged('');
+                            },
+                          ),
+                  ),
                 ),
-                onChanged: (value) => setState(() => _query = value),
+                onChanged: _onSearchChanged,
               ),
               const SizedBox(height: 8),
 
-              // Results
-              if (_query.trim().isNotEmpty)
+              // Results or empty state
+              if (_query.isNotEmpty)
                 Expanded(
                   child: _SearchResults(
-                    query: _query.trim(),
+                    query: _query,
                     scrollController: scrollController,
                   ),
                 )
@@ -182,7 +194,7 @@ class _NewChatSheetState extends ConsumerState<_NewChatSheet> {
                 Expanded(
                   child: Center(
                     child: Text(
-                      l10n.enterPhoneToFind,
+                      l10n.enterEmailToFind,
                       style: theme.textTheme.bodyMedium?.copyWith(
                         color: colorScheme.onSurfaceVariant,
                       ),
@@ -190,6 +202,17 @@ class _NewChatSheetState extends ConsumerState<_NewChatSheet> {
                     ),
                   ),
                 ),
+
+              // New group — secondary action
+              const Divider(height: 16),
+              TextButton.icon(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  context.push(AppRoutes.createGroup);
+                },
+                icon: const Icon(Icons.group_add_outlined),
+                label: Text(l10n.newGroup),
+              ),
             ],
           ),
         );
@@ -198,67 +221,98 @@ class _NewChatSheetState extends ConsumerState<_NewChatSheet> {
   }
 }
 
-class _SearchResults extends ConsumerWidget {
+/// Email search, scoped to this screen. autoDispose so abandoned prefixes
+/// ("a", "an", "ann"…) don't stay cached forever. Family-keyed by query, so
+/// results can never be applied to a different (stale) query.
+final _userSearchProvider = FutureProvider.autoDispose
+    .family<List<AppUser>, String>((ref, query) {
+      final repo = ref.watch(firestoreUserRepositoryProvider);
+      return repo.searchUsersByEmail(query);
+    });
+
+class _SearchResults extends ConsumerStatefulWidget {
   const _SearchResults({required this.query, required this.scrollController});
 
   final String query;
   final ScrollController scrollController;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final resultsAsync = ref.watch(userSearchProvider(query));
+  ConsumerState<_SearchResults> createState() => _SearchResultsState();
+}
+
+class _SearchResultsState extends ConsumerState<_SearchResults> {
+  /// Last successfully loaded results — kept on screen while a new query is
+  /// in flight so the list doesn't flash away on every keystroke.
+  List<AppUser>? _lastResults;
+
+  @override
+  Widget build(BuildContext context) {
+    final resultsAsync = ref.watch(_userSearchProvider(widget.query));
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final l10n = AppLocalizations.of(context)!;
 
-    return resultsAsync.when(
-      loading: () => const Center(child: CircularProgressIndicator()),
-      error: (e, _) => Center(child: Text(l10n.searchFailed(e.toString()))),
-      data: (users) {
-        if (users.isEmpty) {
-          return Center(
-            child: Text(
-              l10n.noUsersFound,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: colorScheme.onSurfaceVariant,
-              ),
-            ),
-          );
-        }
+    final loaded = resultsAsync.valueOrNull;
+    if (loaded != null) _lastResults = loaded;
+    final users = loaded ?? _lastResults;
+    final isSearching = resultsAsync.isLoading;
 
-        return ListView.builder(
-          controller: scrollController,
-          itemCount: users.length,
-          itemBuilder: (context, index) {
-            final user = users[index];
-            return ListTile(
-              leading: CircleAvatar(
-                backgroundColor: colorScheme.primaryContainer,
-                child: Text(
-                  (user.displayName ?? '?')[0].toUpperCase(),
-                  style: TextStyle(
-                    color: colorScheme.onPrimaryContainer,
-                    fontWeight: FontWeight.w700,
+    if (resultsAsync.hasError && !isSearching) {
+      return Center(
+        child: Text(l10n.searchFailed(resultsAsync.error.toString())),
+      );
+    }
+
+    return Column(
+      children: [
+        // Small inline progress instead of a full-height spinner.
+        SizedBox(
+          height: 2,
+          child: isSearching
+              ? const LinearProgressIndicator(minHeight: 2)
+              : null,
+        ),
+        Expanded(
+          child: users == null
+              ? const _SearchResultsSkeleton()
+              : users.isEmpty
+              ? Center(
+                  child: Text(
+                    l10n.noUsersFound,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                    ),
                   ),
+                )
+              : ListView.builder(
+                  controller: widget.scrollController,
+                  itemCount: users.length,
+                  itemBuilder: (context, index) {
+                    final user = users[index];
+                    return ListTile(
+                      leading: _UserAvatar(
+                        seed: user.id,
+                        initialSource: user.displayName,
+                        radius: 20,
+                      ),
+                      title: Text(user.displayName ?? l10n.unknown),
+                      subtitle: Text(user.email ?? user.phoneNumber),
+                      onTap: () async {
+                        Navigator.of(context).pop();
+                        final conversationService = ref.read(
+                          conversationServiceProvider,
+                        );
+                        final conversationId = await conversationService
+                            .startDirectConversation(user.id);
+                        if (context.mounted) {
+                          context.push('/chat/$conversationId');
+                        }
+                      },
+                    );
+                  },
                 ),
-              ),
-              title: Text(user.displayName ?? l10n.unknown),
-              subtitle: Text(user.phoneNumber),
-              onTap: () async {
-                Navigator.of(context).pop();
-                final conversationService = ref.read(
-                  conversationServiceProvider,
-                );
-                final conversationId = await conversationService
-                    .startDirectConversation(user.id);
-                if (context.mounted) {
-                  context.push('/chat/$conversationId');
-                }
-              },
-            );
-          },
-        );
-      },
+        ),
+      ],
     );
   }
 }
@@ -277,7 +331,7 @@ class _ConversationList extends ConsumerWidget {
     return ListView.separated(
       padding: const EdgeInsets.symmetric(vertical: 8),
       itemCount: conversations.length,
-      separatorBuilder: (_, __) => const Divider(indent: 72, height: 1),
+      separatorBuilder: (_, _) => const Divider(indent: 72, height: 1),
       itemBuilder: (context, index) {
         final conversation = conversations[index];
         return _ConversationTile(conversation: conversation);
@@ -297,7 +351,11 @@ class _ConversationTile extends ConsumerWidget {
     final colorScheme = theme.colorScheme;
     final l10n = AppLocalizations.of(context)!;
     final isGroup = conversation.type == ConversationType.group;
-    final currentUserId = ref.watch(authProvider).user?.uid;
+    // Only the uid matters here — don't rebuild every tile when unrelated
+    // auth flags (isLoading, error) change.
+    final currentUserId = ref.watch(
+      authProvider.select((state) => state.user?.uid),
+    );
     final unreadCount = currentUserId == null
         ? 0
         : (conversation.unreadCounts[currentUserId] ?? 0);
@@ -305,30 +363,40 @@ class _ConversationTile extends ConsumerWidget {
     final previewText = conversation.lastMessagePreview?.trim() ?? '';
     final hasPreview = previewText.isNotEmpty;
 
-    // Resolve display title.
-    String title;
+    // Resolve display title. Null means "still loading" (direct chats only)
+    // and renders as a fixed-size placeholder bar, so nothing jumps once the
+    // name arrives.
+    String? title;
+    String? otherUserId;
     if (isGroup) {
       title = conversation.title ?? l10n.group;
     } else {
-      // For direct conversations, show the other user's name.
-      final uid = ref.watch(authProvider).user?.uid;
       final otherIds = conversation.participantIds
-          .where((id) => id != uid)
+          .where((id) => id != currentUserId)
           .toList();
-      title = _resolveDirectTitle(ref, otherIds, l10n);
+      if (otherIds.isEmpty) {
+        title = l10n.chat;
+      } else {
+        otherUserId = otherIds.first;
+        // Shared cached lookup — resolved once per user, reused by every
+        // tile/screen that needs this user.
+        final otherUserAsync = ref.watch(userByIdProvider(otherUserId));
+        title = otherUserAsync.when(
+          skipLoadingOnReload: true,
+          data: (user) => user?.displayName ?? l10n.unknown,
+          loading: () => null,
+          error: (_, _) => l10n.unknown,
+        );
+      }
     }
 
     String? formattedTime;
     final msgDate = conversation.lastMessageAt;
     if (msgDate != null) {
-      final now = DateTime.now();
-      if (now.difference(msgDate).inDays == 0) {
-        formattedTime = DateFormat.jm().format(msgDate);
-      } else if (now.difference(msgDate).inDays < 7) {
-        formattedTime = DateFormat.E().format(msgDate);
-      } else {
-        formattedTime = DateFormat.MMMd().format(msgDate);
-      }
+      formattedTime = _formatTimestamp(
+        msgDate,
+        Localizations.localeOf(context).toString(),
+      );
     }
 
     return InkWell(
@@ -337,20 +405,21 @@ class _ConversationTile extends ConsumerWidget {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         child: Row(
           children: [
-            CircleAvatar(
-              radius: 28,
-              backgroundColor: isGroup
-                  ? colorScheme.secondaryContainer
-                  : colorScheme.primaryContainer,
-              child: isGroup
-                  ? Icon(Icons.group, color: colorScheme.onSecondaryContainer)
-                  : Text(
-                      title.isNotEmpty ? title[0].toUpperCase() : '?',
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        color: colorScheme.onPrimaryContainer,
-                      ),
-                    ),
-            ),
+            if (isGroup)
+              CircleAvatar(
+                radius: 28,
+                backgroundColor: colorScheme.secondaryContainer,
+                child: Icon(
+                  Icons.group,
+                  color: colorScheme.onSecondaryContainer,
+                ),
+              )
+            else
+              _UserAvatar(
+                seed: otherUserId ?? conversation.id,
+                initialSource: title,
+                radius: 28,
+              ),
             const SizedBox(width: 16),
             Expanded(
               child: Column(
@@ -359,15 +428,17 @@ class _ConversationTile extends ConsumerWidget {
                   Row(
                     children: [
                       Expanded(
-                        child: Text(
-                          title,
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight: hasUnread
-                                ? FontWeight.w700
-                                : FontWeight.w500,
-                          ),
-                          overflow: TextOverflow.ellipsis,
-                        ),
+                        child: title == null
+                            ? const _TextPlaceholder(width: 120, height: 16)
+                            : Text(
+                                title,
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  fontWeight: hasUnread
+                                      ? FontWeight.w700
+                                      : FontWeight.w500,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
                       ),
                       if (formattedTime != null)
                         Text(
@@ -439,33 +510,192 @@ class _ConversationTile extends ConsumerWidget {
     );
   }
 
-  /// Resolves the display name for a direct conversation by fetching the other
-  /// user from Firestore. Returns a placeholder while loading.
-  String _resolveDirectTitle(
-    WidgetRef ref,
-    List<String> otherIds,
-    AppLocalizations l10n,
-  ) {
-    if (otherIds.isEmpty) return l10n.chat;
-    // Use a simple FutureProvider to fetch the other user's name.
-    final otherUserAsync = ref.watch(_otherUserNameProvider(otherIds.first));
-    return otherUserAsync.when(
-      data: (name) => name ?? l10n.unknown,
-      loading: () => '...',
-      error: (_, __) => l10n.unknown,
+  /// Today → time, last week → weekday, older → short date. Compares calendar
+  /// days (not 24h windows) so late-night messages land in the right bucket.
+  String _formatTimestamp(DateTime date, String localeName) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final day = DateTime(date.year, date.month, date.day);
+    final daysAgo = today.difference(day).inDays;
+    if (daysAgo <= 0) return DateFormat.jm(localeName).format(date);
+    if (daysAgo < 7) return DateFormat.E(localeName).format(date);
+    return DateFormat.MMMd(localeName).format(date);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shared visual helpers
+// ---------------------------------------------------------------------------
+
+/// Circle avatar with an initials fallback, colored deterministically from
+/// [seed] (typically the user id) so a user keeps the same color everywhere.
+class _UserAvatar extends StatelessWidget {
+  const _UserAvatar({
+    required this.seed,
+    required this.initialSource,
+    required this.radius,
+  });
+
+  final String seed;
+  final String? initialSource;
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isLight = theme.brightness == Brightness.light;
+    final hue = (seed.hashCode.abs() % 360).toDouble();
+    final background = HSLColor.fromAHSL(
+      1,
+      hue,
+      isLight ? 0.42 : 0.36,
+      isLight ? 0.84 : 0.30,
+    ).toColor();
+    final foreground = HSLColor.fromAHSL(
+      1,
+      hue,
+      isLight ? 0.48 : 0.38,
+      isLight ? 0.28 : 0.88,
+    ).toColor();
+
+    final source = initialSource?.trim() ?? '';
+    final initial = source.isEmpty ? '?' : source[0].toUpperCase();
+
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: background,
+      child: Text(
+        initial,
+        style: theme.textTheme.titleLarge?.copyWith(
+          color: foreground,
+          fontWeight: FontWeight.w600,
+          fontSize: radius * 0.75,
+        ),
+      ),
     );
   }
 }
 
-/// Resolves a user's display name by ID.
-final _otherUserNameProvider = FutureProvider.family<String?, String>((
-  ref,
-  userId,
-) async {
-  final repo = ref.watch(firestoreUserRepositoryProvider);
-  final user = await repo.getUser(userId);
-  return user?.displayName;
-});
+/// Static grey rounded bar standing in for a line of text.
+class _TextPlaceholder extends StatelessWidget {
+  const _TextPlaceholder({required this.width, required this.height});
+
+  final double width;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: AlignmentDirectional.centerStart,
+      child: Container(
+        width: width,
+        height: height,
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(height / 2),
+        ),
+      ),
+    );
+  }
+}
+
+/// Gently pulsing wrapper for skeleton placeholders. Pure Flutter — no
+/// packages.
+class _SkeletonPulse extends StatefulWidget {
+  const _SkeletonPulse({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_SkeletonPulse> createState() => _SkeletonPulseState();
+}
+
+class _SkeletonPulseState extends State<_SkeletonPulse>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  )..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: Tween<double>(
+        begin: 0.45,
+        end: 1,
+      ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut)),
+      child: widget.child,
+    );
+  }
+}
+
+class _SkeletonTile extends StatelessWidget {
+  const _SkeletonTile();
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.surfaceContainerHighest;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        children: [
+          CircleAvatar(radius: 28, backgroundColor: color),
+          const SizedBox(width: 16),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _TextPlaceholder(width: 140, height: 14),
+                SizedBox(height: 10),
+                _TextPlaceholder(width: 220, height: 12),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Loading placeholder for the conversation list — shown only on first load,
+/// reloads keep the previous data on screen.
+class _ConversationListSkeleton extends StatelessWidget {
+  const _ConversationListSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return _SkeletonPulse(
+      child: ListView.builder(
+        physics: const NeverScrollableScrollPhysics(),
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        itemCount: 8,
+        itemBuilder: (_, _) => const _SkeletonTile(),
+      ),
+    );
+  }
+}
+
+/// Loading placeholder for the first user-search request.
+class _SearchResultsSkeleton extends StatelessWidget {
+  const _SearchResultsSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return _SkeletonPulse(
+      child: ListView.builder(
+        physics: const NeverScrollableScrollPhysics(),
+        itemCount: 3,
+        itemBuilder: (_, _) => const _SkeletonTile(),
+      ),
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Empty state

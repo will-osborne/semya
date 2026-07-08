@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -16,25 +18,31 @@ class CreateGroupScreen extends ConsumerStatefulWidget {
 }
 
 class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
+  static const _debounceDuration = Duration(milliseconds: 300);
+
   final _formKey = GlobalKey<FormState>();
   final _groupNameController = TextEditingController();
   final _searchController = TextEditingController();
 
   final List<AppUser> _selectedMembers = [];
   List<AppUser> _searchResults = [];
+  Timer? _searchDebounce;
   bool _isSearching = false;
   bool _isLoadingSearch = false;
   bool _isCreating = false;
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _groupNameController.dispose();
     _searchController.dispose();
     super.dispose();
   }
 
-  Future<void> _onSearchChanged(String query) async {
-    if (query.trim().isEmpty) {
+  void _onSearchChanged(String query) {
+    _searchDebounce?.cancel();
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) {
       setState(() {
         _searchResults.clear();
         _isSearching = false;
@@ -43,27 +51,32 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
       return;
     }
 
+    _searchDebounce = Timer(_debounceDuration, () => _search(trimmed));
+  }
+
+  Future<void> _search(String query) async {
     setState(() {
       _isSearching = true;
       _isLoadingSearch = true;
     });
 
+    // Discard responses that no longer match what's in the field — a slow
+    // early request must not overwrite results of a fast later one.
+    bool isStale() => !mounted || _searchController.text.trim() != query;
+
     try {
       final userRepo = ref.read(firestoreUserRepositoryProvider);
-      final results = await userRepo.searchUsersByPhone(query.trim());
+      final results = await userRepo.searchUsersByEmail(query);
+      if (isStale()) return;
       // Filter out the current user.
       final uid = ref.read(authProvider).user?.uid;
-      final filtered = results.where((u) => u.id != uid).toList();
-      if (mounted) {
-        setState(() {
-          _searchResults = filtered;
-          _isLoadingSearch = false;
-        });
-      }
+      setState(() {
+        _searchResults = results.where((u) => u.id != uid).toList();
+        _isLoadingSearch = false;
+      });
     } catch (e) {
-      if (mounted) {
-        setState(() => _isLoadingSearch = false);
-      }
+      if (isStale()) return;
+      setState(() => _isLoadingSearch = false);
     }
   }
 
@@ -231,7 +244,7 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   itemCount: _selectedMembers.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  separatorBuilder: (_, _) => const SizedBox(width: 8),
                   itemBuilder: (context, index) {
                     final member = _selectedMembers[index];
                     final name = member.displayName ?? l10n.unknown;
@@ -262,21 +275,26 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: TextField(
                 controller: _searchController,
-                keyboardType: TextInputType.phone,
+                keyboardType: TextInputType.emailAddress,
                 textInputAction: TextInputAction.search,
                 enabled: !_isCreating,
                 decoration: InputDecoration(
-                  hintText: l10n.searchByPhoneNumber,
+                  hintText: l10n.searchByEmail,
                   prefixIcon: const Icon(Icons.search),
-                  suffixIcon: _searchController.text.isNotEmpty
-                      ? IconButton(
-                          icon: const Icon(Icons.clear),
-                          onPressed: () {
-                            _searchController.clear();
-                            _onSearchChanged('');
-                          },
-                        )
-                      : null,
+                  // Controller-driven so typing doesn't need a setState just
+                  // to toggle the clear button.
+                  suffixIcon: ValueListenableBuilder<TextEditingValue>(
+                    valueListenable: _searchController,
+                    builder: (context, value, _) => value.text.isEmpty
+                        ? const SizedBox.shrink()
+                        : IconButton(
+                            icon: const Icon(Icons.clear),
+                            onPressed: () {
+                              _searchController.clear();
+                              _onSearchChanged('');
+                            },
+                          ),
+                  ),
                 ),
                 onChanged: _onSearchChanged,
               ),
@@ -284,26 +302,35 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
 
             const SizedBox(height: 8),
 
+            // Small inline progress — previous results stay visible while a
+            // new search is in flight.
+            SizedBox(
+              height: 2,
+              child: _isLoadingSearch
+                  ? const LinearProgressIndicator(minHeight: 2)
+                  : null,
+            ),
+
             // Results / placeholder
             Expanded(
-              child: _isSearching
-                  ? _isLoadingSearch
-                        ? const Center(child: CircularProgressIndicator())
-                        : _searchResults.isEmpty
-                        ? _NoResultsState()
-                        : ListView.builder(
-                            itemCount: _searchResults.length,
-                            itemBuilder: (context, index) {
-                              final user = _searchResults[index];
-                              final isSelected = _isMemberSelected(user);
-                              return _ContactTile(
-                                user: user,
-                                isSelected: isSelected,
-                                onTap: () => _toggleMember(user),
-                              );
-                            },
-                          )
-                  : _SearchPromptState(),
+              child: !_isSearching
+                  ? _SearchPromptState()
+                  : _searchResults.isNotEmpty
+                  ? ListView.builder(
+                      itemCount: _searchResults.length,
+                      itemBuilder: (context, index) {
+                        final user = _searchResults[index];
+                        final isSelected = _isMemberSelected(user);
+                        return _ContactTile(
+                          user: user,
+                          isSelected: isSelected,
+                          onTap: () => _toggleMember(user),
+                        );
+                      },
+                    )
+                  : _isLoadingSearch
+                  ? const SizedBox.shrink()
+                  : _NoResultsState(),
             ),
 
             // Bottom action bar
@@ -377,7 +404,7 @@ class _ContactTile extends StatelessWidget {
               ),
       ),
       title: Text(name),
-      subtitle: Text(user.phoneNumber),
+      subtitle: Text(user.email ?? user.phoneNumber),
       trailing: isSelected
           ? Icon(Icons.check_circle, color: colorScheme.primary)
           : Icon(Icons.circle_outlined, color: colorScheme.outline),

@@ -20,118 +20,173 @@ class FirestoreMessageRepository implements MessageRepository {
         .collection(_messagesSubcollection);
   }
 
+  DocumentReference<Map<String, dynamic>> _conversationRef(
+    String conversationId,
+  ) {
+    return _firestore.collection(_conversationsCollection).doc(conversationId);
+  }
+
   @override
-  Future<void> sendMessage(Message message) async {
-    final conversationRef = _firestore
-        .collection(_conversationsCollection)
-        .doc(message.conversationId);
-    final conversationSnapshot = await conversationRef.get();
-    final conversationData = conversationSnapshot.data();
-    if (!conversationSnapshot.exists || conversationData == null) {
-      throw StateError(
-        'Conversation ${message.conversationId} does not exist.',
-      );
-    }
+  Future<void> sendMessage(
+    Message message, {
+    List<String>? participantIds,
+  }) async {
+    final recipients =
+        participantIds ?? await _participantIdsFor(message.conversationId);
 
-    final participantIds = List<String>.from(
-      (conversationData['participantIds'] as List?) ?? const <String>[],
-    );
     final batch = _firestore.batch();
+    batch.set(
+      _messagesCollection(message.conversationId).doc(message.id),
+      _messageJson(message),
+    );
+    batch.update(
+      _conversationRef(message.conversationId),
+      _conversationUpdatesFor(message, recipients),
+    );
 
-    final messageRef = _messagesCollection(
-      message.conversationId,
-    ).doc(message.id);
-    final json = message.toJson();
-    // Use Firestore server timestamp for consistent ordering across devices.
-    json['serverTimestamp'] = FieldValue.serverTimestamp();
-    batch.set(messageRef, json);
-
-    final preview = _previewFor(message);
-    final conversationUpdates = <String, Object?>{
-      'lastMessageAt': FieldValue.serverTimestamp(),
-      'lastMessagePreview': preview,
-      'unreadCounts.${message.senderId}': 0,
-      'lastDeliveredAtByUser.${message.senderId}': FieldValue.serverTimestamp(),
-      'lastReadAtByUser.${message.senderId}': FieldValue.serverTimestamp(),
-    };
-    for (final participantId in participantIds) {
-      if (participantId == message.senderId) continue;
-      conversationUpdates['unreadCounts.$participantId'] = FieldValue.increment(
-        1,
-      );
-    }
-    batch.update(conversationRef, conversationUpdates);
-
+    // No timeout: a timed-out await would not cancel the queued write (that
+    // was the phantom-delivery bug). This future completes when the server
+    // acknowledges the batch and errors only on an actual rejection —
+    // callers relying on Firestore's offline queue should not await it.
     await batch.commit();
   }
 
   @override
-  Stream<List<Message>> getMessages(
-    String conversationId, {
-    int limit = 50,
-    DateTime? before,
-  }) {
-    Query<Map<String, dynamic>> query = _messagesCollection(
+  Future<void> createMessage(Message message) async {
+    await _messagesCollection(
+      message.conversationId,
+    ).doc(message.id).set(_messageJson(message));
+  }
+
+  @override
+  Future<void> finalizeMessage(
+    Message message, {
+    List<String>? participantIds,
+  }) async {
+    final recipients =
+        participantIds ?? await _participantIdsFor(message.conversationId);
+
+    final batch = _firestore.batch();
+    batch.update(_messagesCollection(message.conversationId).doc(message.id), {
+      'content': message.content,
+      'thumbnailUrl': message.thumbnailUrl,
+      'mediaWidth': message.mediaWidth,
+      'mediaHeight': message.mediaHeight,
+      'uploadPending': false,
+      'status': MessageStatus.sent.name,
+    });
+    batch.update(
+      _conversationRef(message.conversationId),
+      _conversationUpdatesFor(message, recipients),
+    );
+    await batch.commit();
+  }
+
+  @override
+  Stream<List<Message>> getMessages(String conversationId, {int limit = 50}) {
+    final query = _messagesCollection(
       conversationId,
     ).orderBy('serverTimestamp', descending: true).limit(limit);
 
-    if (before != null) {
-      query = query.startAfter([Timestamp.fromDate(before)]);
-    }
-
-    return query.snapshots().map(
-      (snapshot) => snapshot.docs
-          .map((doc) => Message.fromJson(_withId(doc.id, doc.data())))
-          .toList(),
-    );
+    // Metadata changes are included so pending local writes (offline queue /
+    // latency compensation) can be surfaced as "sending" in the UI.
+    return query
+        .snapshots(includeMetadataChanges: true)
+        .map((snapshot) => snapshot.docs.map(_messageFromDoc).toList());
   }
 
   @override
   Future<List<Message>> getMessagesBatch(
     String conversationId, {
     int limit = 20,
-    DateTime? before,
+    String? beforeMessageId,
   }) async {
     Query<Map<String, dynamic>> query = _messagesCollection(
       conversationId,
-    ).orderBy('serverTimestamp', descending: true).limit(limit);
+    ).orderBy('serverTimestamp', descending: true);
 
-    if (before != null) {
-      query = query.startAfter([Timestamp.fromDate(before)]);
+    if (beforeMessageId != null) {
+      // Cursor on the actual document: a bare timestamp cursor skips
+      // messages that share an identical serverTimestamp.
+      final anchor = await _messagesCollection(
+        conversationId,
+      ).doc(beforeMessageId).get();
+      if (!anchor.exists) return const [];
+      query = query.startAfterDocument(anchor);
     }
 
-    final snapshot = await query.get();
-    return snapshot.docs
-        .map((doc) => Message.fromJson(_withId(doc.id, doc.data())))
-        .toList();
-  }
-
-  @override
-  Future<Message?> getMessage(String id) async {
-    // A message ID alone is not sufficient to locate the document because
-    // messages live in a conversation subcollection. A collection group query
-    // is used here so callers do not need to supply the conversationId.
-    final snapshot = await _firestore
-        .collectionGroup(_messagesSubcollection)
-        .where(FieldPath.documentId, isEqualTo: id)
-        .limit(1)
-        .get();
-
-    if (snapshot.docs.isEmpty) return null;
-
-    final doc = snapshot.docs.first;
-    return Message.fromJson(_withId(doc.id, doc.data()));
+    final snapshot = await query.limit(limit).get();
+    return snapshot.docs.map(_messageFromDoc).toList();
   }
 
   @override
   Future<void> updateMessageStatus(
     String conversationId,
     String messageId,
-    MessageStatus status,
-  ) async {
-    await _messagesCollection(
-      conversationId,
-    ).doc(messageId).update({'status': status.name});
+    MessageStatus status, {
+    bool uploadPending = false,
+  }) async {
+    await _messagesCollection(conversationId).doc(messageId).update({
+      'status': status.name,
+      'uploadPending': uploadPending,
+    });
+  }
+
+  Map<String, dynamic> _messageJson(Message message) {
+    final json = message.toJson();
+    // Use Firestore server timestamp for consistent ordering across devices.
+    json['serverTimestamp'] = FieldValue.serverTimestamp();
+    return json;
+  }
+
+  Message _messageFromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
+    var message = Message.fromJson(_withId(doc.id, doc.data() ?? const {}));
+    final pending =
+        doc.metadata.hasPendingWrites || message.serverTimestamp == null;
+    if (!pending && message.status == MessageStatus.sending) {
+      // Legacy docs persisted a transient 'sending' status; a doc the server
+      // has acknowledged was sent regardless of what the old client wrote.
+      message = message.copyWith(status: MessageStatus.sent);
+    }
+    return message.copyWith(isPending: pending);
+  }
+
+  /// Resolves participant ids with a cache-first read, falling back to the
+  /// default (server-then-cache) read on a cache miss.
+  Future<List<String>> _participantIdsFor(String conversationId) async {
+    final ref = _conversationRef(conversationId);
+    DocumentSnapshot<Map<String, dynamic>> snapshot;
+    try {
+      snapshot = await ref.get(const GetOptions(source: Source.cache));
+      if (!snapshot.exists) {
+        snapshot = await ref.get();
+      }
+    } on FirebaseException {
+      snapshot = await ref.get();
+    }
+    final data = snapshot.data();
+    if (data == null) return const [];
+    return List<String>.from(
+      (data['participantIds'] as List?) ?? const <String>[],
+    );
+  }
+
+  Map<String, Object?> _conversationUpdatesFor(
+    Message message,
+    List<String> participantIds,
+  ) {
+    final updates = <String, Object?>{
+      'lastMessageAt': FieldValue.serverTimestamp(),
+      'lastMessagePreview': _previewFor(message),
+      'unreadCounts.${message.senderId}': 0,
+      'lastDeliveredAtByUser.${message.senderId}': FieldValue.serverTimestamp(),
+      'lastReadAtByUser.${message.senderId}': FieldValue.serverTimestamp(),
+    };
+    for (final participantId in participantIds) {
+      if (participantId == message.senderId) continue;
+      updates['unreadCounts.$participantId'] = FieldValue.increment(1);
+    }
+    return updates;
   }
 
   Map<String, dynamic> _withId(String id, Map<String, dynamic> data) {

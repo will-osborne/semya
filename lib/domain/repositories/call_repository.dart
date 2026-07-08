@@ -14,14 +14,19 @@ abstract class CallRepository {
   );
   Stream<Call?> watchIncomingCalls(String userId);
 
-  /// Writes a restart offer (created with iceRestart=true) to the call doc.
-  /// The remote peer watches for this and responds with a restart answer.
-  Future<void> setRestartOffer(String callId, Map<String, dynamic> offer);
+  /// Returns a fresh ringing call from [callerId] to [calleeId], if one
+  /// exists. Used for glare handling: when both users dial each other at
+  /// once, the initiator answers the existing call instead of creating a
+  /// competing one.
+  Future<Call?> getRingingCallBetween({
+    required String callerId,
+    required String calleeId,
+  });
 
-  /// Writes a restart answer in response to a restart offer.
-  Future<void> setRestartAnswer(String callId, Map<String, dynamic> answer);
+  /// Writes a new ICE restart offer from the caller and clears any previous
+  /// restart answer. Only the original caller initiates ICE restarts.
+  Future<void> initiateIceRestart(String callId, Map<String, dynamic> offer);
 
-  /// Emits `{offer, answer?}` maps as the restart negotiation fields change.
-  /// Emits null when neither field is present.
-  Stream<Map<String, dynamic>?> watchRestartNegotiation(String callId);
+  /// Writes the callee's answer to a pending ICE restart offer.
+  Future<void> acknowledgeIceRestart(String callId, Map<String, dynamic> answer);
 }

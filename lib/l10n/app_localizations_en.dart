@@ -31,6 +31,87 @@ class AppLocalizationsEn extends AppLocalizations {
   String get encryptedFamilyMessaging => 'Encrypted family messaging';
 
   @override
+  String get enterEmailAndPassword => 'Enter your email and password';
+
+  @override
+  String get emailAuthDescription =>
+      'Sign in with your Firebase email account.';
+
+  @override
+  String get emailLabel => 'Email';
+
+  @override
+  String get emailHint => 'name@example.com';
+
+  @override
+  String get emailEmpty => 'Please enter your email address.';
+
+  @override
+  String get emailInvalid => 'Please enter a valid email address.';
+
+  @override
+  String get passwordLabel => 'Password';
+
+  @override
+  String get passwordHint => 'At least 6 characters';
+
+  @override
+  String get passwordEmpty => 'Please enter your password.';
+
+  @override
+  String get passwordTooShort => 'Password must be at least 6 characters.';
+
+  @override
+  String get confirmPasswordLabel => 'Confirm password';
+
+  @override
+  String get confirmPasswordEmpty => 'Please confirm your password.';
+
+  @override
+  String get passwordsDoNotMatch => 'Passwords do not match.';
+
+  @override
+  String get signIn => 'Sign In';
+
+  @override
+  String get createAccount => 'Create Account';
+
+  @override
+  String get alreadyHaveAccountSignIn => 'Already have an account? Sign in';
+
+  @override
+  String get noAccountCreateOne => 'No account yet? Create one';
+
+  @override
+  String get noEmailVerificationRequired =>
+      'Email verification is not required to sign in.';
+
+  @override
+  String get smsMigrationEntryAction =>
+      'Already had an SMS account? Migrate it';
+
+  @override
+  String get smsMigrationTitle => 'Migrate SMS account';
+
+  @override
+  String get smsMigrationDescription =>
+      'Sign in with your existing phone number once to keep your current account and data, then add email/password.';
+
+  @override
+  String get smsMigrationOtpDescription =>
+      'Enter the SMS code for your existing account.';
+
+  @override
+  String get linkEmailPasswordTitle => 'Add email & password';
+
+  @override
+  String get linkEmailPasswordDescription =>
+      'You\'re signed in with phone. Add email/password to keep this same account ID for future logins.';
+
+  @override
+  String get linkEmailPasswordAction => 'Link email & password';
+
+  @override
   String get enterPhoneNumber => 'Enter your phone number';
 
   @override
@@ -130,7 +211,14 @@ class AppLocalizationsEn extends AppLocalizations {
   String get searchByPhoneNumber => 'Search by phone number';
 
   @override
+  String get searchByEmail => 'Search by email address';
+
+  @override
   String get enterPhoneToFind => 'Enter a phone number to find family members.';
+
+  @override
+  String get enterEmailToFind =>
+      'Enter an email address to find family members.';
 
   @override
   String searchFailed(String error) {
@@ -196,6 +284,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String get languageSubtitle => 'English, Русский';
 
   @override
+  String get developer => 'Developer';
+
+  @override
+  String get callDebugLogs => 'Call debug logs';
+
+  @override
+  String get callDebugLogsSubtitle => 'ICE candidates, TURN, connection state';
+
+  @override
   String get signOut => 'Sign Out';
 
   @override
@@ -203,10 +300,25 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get signOutConfirmMessage =>
-      'Are you sure you want to sign out? You will need to verify your phone number again to sign in.';
+      'Are you sure you want to sign out? You will need your email and password to sign in again.';
 
   @override
   String get cancel => 'Cancel';
+
+  @override
+  String get startupPermissionsMissing =>
+      'Some permissions are still missing. Please enable them in iOS Settings.';
+
+  @override
+  String get openSettingsAction => 'Open Settings';
+
+  @override
+  String get callMicrophonePermissionRequired =>
+      'Microphone access is required for calls. Enable it in Settings.';
+
+  @override
+  String get notificationsDisabledCallsWarning =>
+      'Notifications are disabled — incoming calls will not be shown. Enable notifications in Settings.';
 
   @override
   String get microphonePermissionRequired =>
@@ -265,7 +377,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get searchForFamilyMembers =>
-      'Search for family members by phone number.';
+      'Search for family members by email address.';
 
   @override
   String get noUsersFoundInstallApp =>

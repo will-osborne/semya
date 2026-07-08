@@ -33,6 +33,8 @@ abstract class Call with _$Call {
     required CallStatus status,
     Map<String, dynamic>? offer,
     Map<String, dynamic>? answer,
+    Map<String, dynamic>? restartOffer,
+    Map<String, dynamic>? restartAnswer,
     @Default(false) bool callerVideoEnabled,
     @Default(false) bool calleeVideoEnabled,
     required DateTime createdAt,

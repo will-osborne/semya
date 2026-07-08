@@ -293,7 +293,7 @@ as DateTime,
 /// @nodoc
 mixin _$Call {
 
- String get id; String get callerId; String get calleeId; List<String> get participantIds; String get conversationId; CallStatus get status; Map<String, dynamic>? get offer; Map<String, dynamic>? get answer; bool get callerVideoEnabled; bool get calleeVideoEnabled; DateTime get createdAt; DateTime? get endedAt; CallEndReason? get endReason;
+ String get id; String get callerId; String get calleeId; List<String> get participantIds; String get conversationId; CallStatus get status; Map<String, dynamic>? get offer; Map<String, dynamic>? get answer; Map<String, dynamic>? get restartOffer; Map<String, dynamic>? get restartAnswer; bool get callerVideoEnabled; bool get calleeVideoEnabled; DateTime get createdAt; DateTime? get endedAt; CallEndReason? get endReason;
 /// Create a copy of Call
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -306,16 +306,16 @@ $CallCopyWith<Call> get copyWith => _$CallCopyWithImpl<Call>(this as Call, _$ide
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is Call&&(identical(other.id, id) || other.id == id)&&(identical(other.callerId, callerId) || other.callerId == callerId)&&(identical(other.calleeId, calleeId) || other.calleeId == calleeId)&&const DeepCollectionEquality().equals(other.participantIds, participantIds)&&(identical(other.conversationId, conversationId) || other.conversationId == conversationId)&&(identical(other.status, status) || other.status == status)&&const DeepCollectionEquality().equals(other.offer, offer)&&const DeepCollectionEquality().equals(other.answer, answer)&&(identical(other.callerVideoEnabled, callerVideoEnabled) || other.callerVideoEnabled == callerVideoEnabled)&&(identical(other.calleeVideoEnabled, calleeVideoEnabled) || other.calleeVideoEnabled == calleeVideoEnabled)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt)&&(identical(other.endedAt, endedAt) || other.endedAt == endedAt)&&(identical(other.endReason, endReason) || other.endReason == endReason));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is Call&&(identical(other.id, id) || other.id == id)&&(identical(other.callerId, callerId) || other.callerId == callerId)&&(identical(other.calleeId, calleeId) || other.calleeId == calleeId)&&const DeepCollectionEquality().equals(other.participantIds, participantIds)&&(identical(other.conversationId, conversationId) || other.conversationId == conversationId)&&(identical(other.status, status) || other.status == status)&&const DeepCollectionEquality().equals(other.offer, offer)&&const DeepCollectionEquality().equals(other.answer, answer)&&const DeepCollectionEquality().equals(other.restartOffer, restartOffer)&&const DeepCollectionEquality().equals(other.restartAnswer, restartAnswer)&&(identical(other.callerVideoEnabled, callerVideoEnabled) || other.callerVideoEnabled == callerVideoEnabled)&&(identical(other.calleeVideoEnabled, calleeVideoEnabled) || other.calleeVideoEnabled == calleeVideoEnabled)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt)&&(identical(other.endedAt, endedAt) || other.endedAt == endedAt)&&(identical(other.endReason, endReason) || other.endReason == endReason));
 }
 
 @JsonKey(includeFromJson: false, includeToJson: false)
 @override
-int get hashCode => Object.hash(runtimeType,id,callerId,calleeId,const DeepCollectionEquality().hash(participantIds),conversationId,status,const DeepCollectionEquality().hash(offer),const DeepCollectionEquality().hash(answer),callerVideoEnabled,calleeVideoEnabled,createdAt,endedAt,endReason);
+int get hashCode => Object.hash(runtimeType,id,callerId,calleeId,const DeepCollectionEquality().hash(participantIds),conversationId,status,const DeepCollectionEquality().hash(offer),const DeepCollectionEquality().hash(answer),const DeepCollectionEquality().hash(restartOffer),const DeepCollectionEquality().hash(restartAnswer),callerVideoEnabled,calleeVideoEnabled,createdAt,endedAt,endReason);
 
 @override
 String toString() {
-  return 'Call(id: $id, callerId: $callerId, calleeId: $calleeId, participantIds: $participantIds, conversationId: $conversationId, status: $status, offer: $offer, answer: $answer, callerVideoEnabled: $callerVideoEnabled, calleeVideoEnabled: $calleeVideoEnabled, createdAt: $createdAt, endedAt: $endedAt, endReason: $endReason)';
+  return 'Call(id: $id, callerId: $callerId, calleeId: $calleeId, participantIds: $participantIds, conversationId: $conversationId, status: $status, offer: $offer, answer: $answer, restartOffer: $restartOffer, restartAnswer: $restartAnswer, callerVideoEnabled: $callerVideoEnabled, calleeVideoEnabled: $calleeVideoEnabled, createdAt: $createdAt, endedAt: $endedAt, endReason: $endReason)';
 }
 
 
@@ -326,7 +326,7 @@ abstract mixin class $CallCopyWith<$Res>  {
   factory $CallCopyWith(Call value, $Res Function(Call) _then) = _$CallCopyWithImpl;
 @useResult
 $Res call({
- String id, String callerId, String calleeId, List<String> participantIds, String conversationId, CallStatus status, Map<String, dynamic>? offer, Map<String, dynamic>? answer, bool callerVideoEnabled, bool calleeVideoEnabled, DateTime createdAt, DateTime? endedAt, CallEndReason? endReason
+ String id, String callerId, String calleeId, List<String> participantIds, String conversationId, CallStatus status, Map<String, dynamic>? offer, Map<String, dynamic>? answer, Map<String, dynamic>? restartOffer, Map<String, dynamic>? restartAnswer, bool callerVideoEnabled, bool calleeVideoEnabled, DateTime createdAt, DateTime? endedAt, CallEndReason? endReason
 });
 
 
@@ -343,7 +343,7 @@ class _$CallCopyWithImpl<$Res>
 
 /// Create a copy of Call
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? callerId = null,Object? calleeId = null,Object? participantIds = null,Object? conversationId = null,Object? status = null,Object? offer = freezed,Object? answer = freezed,Object? callerVideoEnabled = null,Object? calleeVideoEnabled = null,Object? createdAt = null,Object? endedAt = freezed,Object? endReason = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? callerId = null,Object? calleeId = null,Object? participantIds = null,Object? conversationId = null,Object? status = null,Object? offer = freezed,Object? answer = freezed,Object? restartOffer = freezed,Object? restartAnswer = freezed,Object? callerVideoEnabled = null,Object? calleeVideoEnabled = null,Object? createdAt = null,Object? endedAt = freezed,Object? endReason = freezed,}) {
   return _then(_self.copyWith(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,callerId: null == callerId ? _self.callerId : callerId // ignore: cast_nullable_to_non_nullable
@@ -353,6 +353,8 @@ as List<String>,conversationId: null == conversationId ? _self.conversationId : 
 as String,status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
 as CallStatus,offer: freezed == offer ? _self.offer : offer // ignore: cast_nullable_to_non_nullable
 as Map<String, dynamic>?,answer: freezed == answer ? _self.answer : answer // ignore: cast_nullable_to_non_nullable
+as Map<String, dynamic>?,restartOffer: freezed == restartOffer ? _self.restartOffer : restartOffer // ignore: cast_nullable_to_non_nullable
+as Map<String, dynamic>?,restartAnswer: freezed == restartAnswer ? _self.restartAnswer : restartAnswer // ignore: cast_nullable_to_non_nullable
 as Map<String, dynamic>?,callerVideoEnabled: null == callerVideoEnabled ? _self.callerVideoEnabled : callerVideoEnabled // ignore: cast_nullable_to_non_nullable
 as bool,calleeVideoEnabled: null == calleeVideoEnabled ? _self.calleeVideoEnabled : calleeVideoEnabled // ignore: cast_nullable_to_non_nullable
 as bool,createdAt: null == createdAt ? _self.createdAt : createdAt // ignore: cast_nullable_to_non_nullable
@@ -443,10 +445,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  String callerId,  String calleeId,  List<String> participantIds,  String conversationId,  CallStatus status,  Map<String, dynamic>? offer,  Map<String, dynamic>? answer,  bool callerVideoEnabled,  bool calleeVideoEnabled,  DateTime createdAt,  DateTime? endedAt,  CallEndReason? endReason)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  String callerId,  String calleeId,  List<String> participantIds,  String conversationId,  CallStatus status,  Map<String, dynamic>? offer,  Map<String, dynamic>? answer,  Map<String, dynamic>? restartOffer,  Map<String, dynamic>? restartAnswer,  bool callerVideoEnabled,  bool calleeVideoEnabled,  DateTime createdAt,  DateTime? endedAt,  CallEndReason? endReason)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _Call() when $default != null:
-return $default(_that.id,_that.callerId,_that.calleeId,_that.participantIds,_that.conversationId,_that.status,_that.offer,_that.answer,_that.callerVideoEnabled,_that.calleeVideoEnabled,_that.createdAt,_that.endedAt,_that.endReason);case _:
+return $default(_that.id,_that.callerId,_that.calleeId,_that.participantIds,_that.conversationId,_that.status,_that.offer,_that.answer,_that.restartOffer,_that.restartAnswer,_that.callerVideoEnabled,_that.calleeVideoEnabled,_that.createdAt,_that.endedAt,_that.endReason);case _:
   return orElse();
 
 }
@@ -464,10 +466,10 @@ return $default(_that.id,_that.callerId,_that.calleeId,_that.participantIds,_tha
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  String callerId,  String calleeId,  List<String> participantIds,  String conversationId,  CallStatus status,  Map<String, dynamic>? offer,  Map<String, dynamic>? answer,  bool callerVideoEnabled,  bool calleeVideoEnabled,  DateTime createdAt,  DateTime? endedAt,  CallEndReason? endReason)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  String callerId,  String calleeId,  List<String> participantIds,  String conversationId,  CallStatus status,  Map<String, dynamic>? offer,  Map<String, dynamic>? answer,  Map<String, dynamic>? restartOffer,  Map<String, dynamic>? restartAnswer,  bool callerVideoEnabled,  bool calleeVideoEnabled,  DateTime createdAt,  DateTime? endedAt,  CallEndReason? endReason)  $default,) {final _that = this;
 switch (_that) {
 case _Call():
-return $default(_that.id,_that.callerId,_that.calleeId,_that.participantIds,_that.conversationId,_that.status,_that.offer,_that.answer,_that.callerVideoEnabled,_that.calleeVideoEnabled,_that.createdAt,_that.endedAt,_that.endReason);case _:
+return $default(_that.id,_that.callerId,_that.calleeId,_that.participantIds,_that.conversationId,_that.status,_that.offer,_that.answer,_that.restartOffer,_that.restartAnswer,_that.callerVideoEnabled,_that.calleeVideoEnabled,_that.createdAt,_that.endedAt,_that.endReason);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -484,10 +486,10 @@ return $default(_that.id,_that.callerId,_that.calleeId,_that.participantIds,_tha
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  String callerId,  String calleeId,  List<String> participantIds,  String conversationId,  CallStatus status,  Map<String, dynamic>? offer,  Map<String, dynamic>? answer,  bool callerVideoEnabled,  bool calleeVideoEnabled,  DateTime createdAt,  DateTime? endedAt,  CallEndReason? endReason)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  String callerId,  String calleeId,  List<String> participantIds,  String conversationId,  CallStatus status,  Map<String, dynamic>? offer,  Map<String, dynamic>? answer,  Map<String, dynamic>? restartOffer,  Map<String, dynamic>? restartAnswer,  bool callerVideoEnabled,  bool calleeVideoEnabled,  DateTime createdAt,  DateTime? endedAt,  CallEndReason? endReason)?  $default,) {final _that = this;
 switch (_that) {
 case _Call() when $default != null:
-return $default(_that.id,_that.callerId,_that.calleeId,_that.participantIds,_that.conversationId,_that.status,_that.offer,_that.answer,_that.callerVideoEnabled,_that.calleeVideoEnabled,_that.createdAt,_that.endedAt,_that.endReason);case _:
+return $default(_that.id,_that.callerId,_that.calleeId,_that.participantIds,_that.conversationId,_that.status,_that.offer,_that.answer,_that.restartOffer,_that.restartAnswer,_that.callerVideoEnabled,_that.calleeVideoEnabled,_that.createdAt,_that.endedAt,_that.endReason);case _:
   return null;
 
 }
@@ -499,7 +501,7 @@ return $default(_that.id,_that.callerId,_that.calleeId,_that.participantIds,_tha
 @JsonSerializable()
 
 class _Call implements Call {
-  const _Call({required this.id, required this.callerId, required this.calleeId, required final  List<String> participantIds, required this.conversationId, required this.status, final  Map<String, dynamic>? offer, final  Map<String, dynamic>? answer, this.callerVideoEnabled = false, this.calleeVideoEnabled = false, required this.createdAt, this.endedAt, this.endReason}): _participantIds = participantIds,_offer = offer,_answer = answer;
+  const _Call({required this.id, required this.callerId, required this.calleeId, required final  List<String> participantIds, required this.conversationId, required this.status, final  Map<String, dynamic>? offer, final  Map<String, dynamic>? answer, final  Map<String, dynamic>? restartOffer, final  Map<String, dynamic>? restartAnswer, this.callerVideoEnabled = false, this.calleeVideoEnabled = false, required this.createdAt, this.endedAt, this.endReason}): _participantIds = participantIds,_offer = offer,_answer = answer,_restartOffer = restartOffer,_restartAnswer = restartAnswer;
   factory _Call.fromJson(Map<String, dynamic> json) => _$CallFromJson(json);
 
 @override final  String id;
@@ -532,6 +534,24 @@ class _Call implements Call {
   return EqualUnmodifiableMapView(value);
 }
 
+ final  Map<String, dynamic>? _restartOffer;
+@override Map<String, dynamic>? get restartOffer {
+  final value = _restartOffer;
+  if (value == null) return null;
+  if (_restartOffer is EqualUnmodifiableMapView) return _restartOffer;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableMapView(value);
+}
+
+ final  Map<String, dynamic>? _restartAnswer;
+@override Map<String, dynamic>? get restartAnswer {
+  final value = _restartAnswer;
+  if (value == null) return null;
+  if (_restartAnswer is EqualUnmodifiableMapView) return _restartAnswer;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableMapView(value);
+}
+
 @override@JsonKey() final  bool callerVideoEnabled;
 @override@JsonKey() final  bool calleeVideoEnabled;
 @override final  DateTime createdAt;
@@ -551,16 +571,16 @@ Map<String, dynamic> toJson() {
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is _Call&&(identical(other.id, id) || other.id == id)&&(identical(other.callerId, callerId) || other.callerId == callerId)&&(identical(other.calleeId, calleeId) || other.calleeId == calleeId)&&const DeepCollectionEquality().equals(other._participantIds, _participantIds)&&(identical(other.conversationId, conversationId) || other.conversationId == conversationId)&&(identical(other.status, status) || other.status == status)&&const DeepCollectionEquality().equals(other._offer, _offer)&&const DeepCollectionEquality().equals(other._answer, _answer)&&(identical(other.callerVideoEnabled, callerVideoEnabled) || other.callerVideoEnabled == callerVideoEnabled)&&(identical(other.calleeVideoEnabled, calleeVideoEnabled) || other.calleeVideoEnabled == calleeVideoEnabled)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt)&&(identical(other.endedAt, endedAt) || other.endedAt == endedAt)&&(identical(other.endReason, endReason) || other.endReason == endReason));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is _Call&&(identical(other.id, id) || other.id == id)&&(identical(other.callerId, callerId) || other.callerId == callerId)&&(identical(other.calleeId, calleeId) || other.calleeId == calleeId)&&const DeepCollectionEquality().equals(other._participantIds, _participantIds)&&(identical(other.conversationId, conversationId) || other.conversationId == conversationId)&&(identical(other.status, status) || other.status == status)&&const DeepCollectionEquality().equals(other._offer, _offer)&&const DeepCollectionEquality().equals(other._answer, _answer)&&const DeepCollectionEquality().equals(other._restartOffer, _restartOffer)&&const DeepCollectionEquality().equals(other._restartAnswer, _restartAnswer)&&(identical(other.callerVideoEnabled, callerVideoEnabled) || other.callerVideoEnabled == callerVideoEnabled)&&(identical(other.calleeVideoEnabled, calleeVideoEnabled) || other.calleeVideoEnabled == calleeVideoEnabled)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt)&&(identical(other.endedAt, endedAt) || other.endedAt == endedAt)&&(identical(other.endReason, endReason) || other.endReason == endReason));
 }
 
 @JsonKey(includeFromJson: false, includeToJson: false)
 @override
-int get hashCode => Object.hash(runtimeType,id,callerId,calleeId,const DeepCollectionEquality().hash(_participantIds),conversationId,status,const DeepCollectionEquality().hash(_offer),const DeepCollectionEquality().hash(_answer),callerVideoEnabled,calleeVideoEnabled,createdAt,endedAt,endReason);
+int get hashCode => Object.hash(runtimeType,id,callerId,calleeId,const DeepCollectionEquality().hash(_participantIds),conversationId,status,const DeepCollectionEquality().hash(_offer),const DeepCollectionEquality().hash(_answer),const DeepCollectionEquality().hash(_restartOffer),const DeepCollectionEquality().hash(_restartAnswer),callerVideoEnabled,calleeVideoEnabled,createdAt,endedAt,endReason);
 
 @override
 String toString() {
-  return 'Call(id: $id, callerId: $callerId, calleeId: $calleeId, participantIds: $participantIds, conversationId: $conversationId, status: $status, offer: $offer, answer: $answer, callerVideoEnabled: $callerVideoEnabled, calleeVideoEnabled: $calleeVideoEnabled, createdAt: $createdAt, endedAt: $endedAt, endReason: $endReason)';
+  return 'Call(id: $id, callerId: $callerId, calleeId: $calleeId, participantIds: $participantIds, conversationId: $conversationId, status: $status, offer: $offer, answer: $answer, restartOffer: $restartOffer, restartAnswer: $restartAnswer, callerVideoEnabled: $callerVideoEnabled, calleeVideoEnabled: $calleeVideoEnabled, createdAt: $createdAt, endedAt: $endedAt, endReason: $endReason)';
 }
 
 
@@ -571,7 +591,7 @@ abstract mixin class _$CallCopyWith<$Res> implements $CallCopyWith<$Res> {
   factory _$CallCopyWith(_Call value, $Res Function(_Call) _then) = __$CallCopyWithImpl;
 @override @useResult
 $Res call({
- String id, String callerId, String calleeId, List<String> participantIds, String conversationId, CallStatus status, Map<String, dynamic>? offer, Map<String, dynamic>? answer, bool callerVideoEnabled, bool calleeVideoEnabled, DateTime createdAt, DateTime? endedAt, CallEndReason? endReason
+ String id, String callerId, String calleeId, List<String> participantIds, String conversationId, CallStatus status, Map<String, dynamic>? offer, Map<String, dynamic>? answer, Map<String, dynamic>? restartOffer, Map<String, dynamic>? restartAnswer, bool callerVideoEnabled, bool calleeVideoEnabled, DateTime createdAt, DateTime? endedAt, CallEndReason? endReason
 });
 
 
@@ -588,7 +608,7 @@ class __$CallCopyWithImpl<$Res>
 
 /// Create a copy of Call
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? callerId = null,Object? calleeId = null,Object? participantIds = null,Object? conversationId = null,Object? status = null,Object? offer = freezed,Object? answer = freezed,Object? callerVideoEnabled = null,Object? calleeVideoEnabled = null,Object? createdAt = null,Object? endedAt = freezed,Object? endReason = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? callerId = null,Object? calleeId = null,Object? participantIds = null,Object? conversationId = null,Object? status = null,Object? offer = freezed,Object? answer = freezed,Object? restartOffer = freezed,Object? restartAnswer = freezed,Object? callerVideoEnabled = null,Object? calleeVideoEnabled = null,Object? createdAt = null,Object? endedAt = freezed,Object? endReason = freezed,}) {
   return _then(_Call(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,callerId: null == callerId ? _self.callerId : callerId // ignore: cast_nullable_to_non_nullable
@@ -598,6 +618,8 @@ as List<String>,conversationId: null == conversationId ? _self.conversationId : 
 as String,status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
 as CallStatus,offer: freezed == offer ? _self._offer : offer // ignore: cast_nullable_to_non_nullable
 as Map<String, dynamic>?,answer: freezed == answer ? _self._answer : answer // ignore: cast_nullable_to_non_nullable
+as Map<String, dynamic>?,restartOffer: freezed == restartOffer ? _self._restartOffer : restartOffer // ignore: cast_nullable_to_non_nullable
+as Map<String, dynamic>?,restartAnswer: freezed == restartAnswer ? _self._restartAnswer : restartAnswer // ignore: cast_nullable_to_non_nullable
 as Map<String, dynamic>?,callerVideoEnabled: null == callerVideoEnabled ? _self.callerVideoEnabled : callerVideoEnabled // ignore: cast_nullable_to_non_nullable
 as bool,calleeVideoEnabled: null == calleeVideoEnabled ? _self.calleeVideoEnabled : calleeVideoEnabled // ignore: cast_nullable_to_non_nullable
 as bool,createdAt: null == createdAt ? _self.createdAt : createdAt // ignore: cast_nullable_to_non_nullable

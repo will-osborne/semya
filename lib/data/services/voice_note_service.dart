@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:audio_session/audio_session.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
@@ -29,6 +30,11 @@ class VoiceNoteService {
   // Cache of URL → duration fetched from Storage metadata.
   final Map<String, Duration> _durationCache = {};
 
+  // In-flight (and completed, including negative) metadata fetches keyed by
+  // URL, so each legacy voice note costs at most one roundtrip per session
+  // regardless of how many bubbles ask concurrently.
+  final Map<String, Future<Duration?>> _durationFetches = {};
+
   // ---------------------------------------------------------------------------
   // Recording
   // ---------------------------------------------------------------------------
@@ -52,22 +58,36 @@ class VoiceNoteService {
     );
   }
 
-  Future<String> stopRecordingAndUpload({
-    required String conversationId,
-    required String messageId,
-  }) async {
+  /// Stops the active recording and returns the local file path. The file is
+  /// kept on disk until [uploadVoiceNote] confirms the upload so a failed
+  /// upload can be retried from the same recording.
+  Future<String> stopRecording() async {
     final path = await _recorder.stop();
     if (path == null || path.isEmpty) {
       throw StateError('No recording to stop');
     }
+    _currentRecordingPath = null;
+    return path;
+  }
 
-    final file = File(path);
+  /// Uploads a recorded voice note and returns its download URL. The local
+  /// file is deleted only after the upload has succeeded.
+  Future<String> uploadVoiceNote({
+    required String filePath,
+    required String conversationId,
+    required String messageId,
+  }) async {
+    final file = File(filePath);
 
     // Measure duration before uploading so we can store it in metadata.
     final tempPlayer = AudioPlayer();
     Duration? recordedDuration;
     try {
-      recordedDuration = await tempPlayer.setFilePath(path);
+      // On iOS this probe can fail for some freshly-recorded files depending on
+      // the active AVAudioSession state. Upload should still proceed.
+      recordedDuration = await tempPlayer.setFilePath(filePath);
+    } catch (_) {
+      recordedDuration = null;
     } finally {
       await tempPlayer.dispose();
     }
@@ -87,11 +107,24 @@ class VoiceNoteService {
     // Cache locally so this sender sees it immediately.
     if (recordedDuration != null) {
       _durationCache[downloadUrl] = recordedDuration;
+      // Persist the measured duration onto the message document so every
+      // client renders the note's length without a Storage metadata
+      // roundtrip. The sender owns the doc (rules allow the update) and the
+      // write merges with the pending create in the offline queue.
+      // Best-effort: display falls back to the metadata fetch on failure.
+      unawaited(
+        FirebaseFirestore.instance
+            .collection('conversations')
+            .doc(conversationId)
+            .collection('messages')
+            .doc(messageId)
+            .update({'durationMs': recordedDuration.inMilliseconds})
+            .catchError((_) {}),
+      );
     }
 
-    // Clean up temp file.
+    // Clean up the temp file only now that the upload has succeeded.
     await file.delete().catchError((_) => file);
-    _currentRecordingPath = null;
 
     return downloadUrl;
   }
@@ -109,11 +142,16 @@ class VoiceNoteService {
   // ---------------------------------------------------------------------------
 
   /// Returns the duration for a voice note URL, fetched from Firebase Storage
-  /// custom metadata. Results are cached in memory.
-  Future<Duration?> getDuration(String url) async {
+  /// custom metadata. Fetches at most once per URL per session — results
+  /// (including misses) are memoized so recycled bubbles never refetch.
+  Future<Duration?> getDuration(String url) {
     final cached = _durationCache[url];
-    if (cached != null) return cached;
+    if (cached != null) return Future.value(cached);
 
+    return _durationFetches.putIfAbsent(url, () => _fetchDuration(url));
+  }
+
+  Future<Duration?> _fetchDuration(String url) async {
     try {
       final ref = FirebaseStorage.instance.refFromURL(url);
       final metadata = await ref.getMetadata();
@@ -149,8 +187,20 @@ class VoiceNoteService {
     // Stop any current playback and load new URL.
     await _player.stop();
     _currentlyPlayingUrl = url;
-    await _player.setUrl(url);
+    await _setSource(url);
     await _player.play();
+  }
+
+  /// Seeks within [url]. If it is not the current source it is loaded first
+  /// (paused), so scrubbing an inactive bubble sets its start point without
+  /// starting playback — a subsequent [play] resumes from [position].
+  Future<void> seek(String url, Duration position) async {
+    if (_currentlyPlayingUrl != url) {
+      await _player.stop();
+      _currentlyPlayingUrl = url;
+      await _setSource(url);
+    }
+    await _player.seek(position);
   }
 
   Future<void> pause() async {
@@ -167,6 +217,14 @@ class VoiceNoteService {
     _playerCompleteSub.cancel();
     _recorder.dispose();
     _player.dispose();
+  }
+
+  /// Voice bubbles mid-upload hold a local file path instead of a download
+  /// URL — load those from disk.
+  Future<Duration?> _setSource(String url) {
+    return url.startsWith('http')
+        ? _player.setUrl(url)
+        : _player.setFilePath(url);
   }
 
   Future<void> _configureForPlayback() async {

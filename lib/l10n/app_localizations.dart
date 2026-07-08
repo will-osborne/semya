@@ -140,6 +140,156 @@ abstract class AppLocalizations {
   /// **'Encrypted family messaging'**
   String get encryptedFamilyMessaging;
 
+  /// No description provided for @enterEmailAndPassword.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter your email and password'**
+  String get enterEmailAndPassword;
+
+  /// No description provided for @emailAuthDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign in with your Firebase email account.'**
+  String get emailAuthDescription;
+
+  /// No description provided for @emailLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Email'**
+  String get emailLabel;
+
+  /// No description provided for @emailHint.
+  ///
+  /// In en, this message translates to:
+  /// **'name@example.com'**
+  String get emailHint;
+
+  /// No description provided for @emailEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'Please enter your email address.'**
+  String get emailEmpty;
+
+  /// No description provided for @emailInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Please enter a valid email address.'**
+  String get emailInvalid;
+
+  /// No description provided for @passwordLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Password'**
+  String get passwordLabel;
+
+  /// No description provided for @passwordHint.
+  ///
+  /// In en, this message translates to:
+  /// **'At least 6 characters'**
+  String get passwordHint;
+
+  /// No description provided for @passwordEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'Please enter your password.'**
+  String get passwordEmpty;
+
+  /// No description provided for @passwordTooShort.
+  ///
+  /// In en, this message translates to:
+  /// **'Password must be at least 6 characters.'**
+  String get passwordTooShort;
+
+  /// No description provided for @confirmPasswordLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Confirm password'**
+  String get confirmPasswordLabel;
+
+  /// No description provided for @confirmPasswordEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'Please confirm your password.'**
+  String get confirmPasswordEmpty;
+
+  /// No description provided for @passwordsDoNotMatch.
+  ///
+  /// In en, this message translates to:
+  /// **'Passwords do not match.'**
+  String get passwordsDoNotMatch;
+
+  /// No description provided for @signIn.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign In'**
+  String get signIn;
+
+  /// No description provided for @createAccount.
+  ///
+  /// In en, this message translates to:
+  /// **'Create Account'**
+  String get createAccount;
+
+  /// No description provided for @alreadyHaveAccountSignIn.
+  ///
+  /// In en, this message translates to:
+  /// **'Already have an account? Sign in'**
+  String get alreadyHaveAccountSignIn;
+
+  /// No description provided for @noAccountCreateOne.
+  ///
+  /// In en, this message translates to:
+  /// **'No account yet? Create one'**
+  String get noAccountCreateOne;
+
+  /// No description provided for @noEmailVerificationRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Email verification is not required to sign in.'**
+  String get noEmailVerificationRequired;
+
+  /// No description provided for @smsMigrationEntryAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Already had an SMS account? Migrate it'**
+  String get smsMigrationEntryAction;
+
+  /// No description provided for @smsMigrationTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Migrate SMS account'**
+  String get smsMigrationTitle;
+
+  /// No description provided for @smsMigrationDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign in with your existing phone number once to keep your current account and data, then add email/password.'**
+  String get smsMigrationDescription;
+
+  /// No description provided for @smsMigrationOtpDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter the SMS code for your existing account.'**
+  String get smsMigrationOtpDescription;
+
+  /// No description provided for @linkEmailPasswordTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Add email & password'**
+  String get linkEmailPasswordTitle;
+
+  /// No description provided for @linkEmailPasswordDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'You\'re signed in with phone. Add email/password to keep this same account ID for future logins.'**
+  String get linkEmailPasswordDescription;
+
+  /// No description provided for @linkEmailPasswordAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Link email & password'**
+  String get linkEmailPasswordAction;
+
   /// No description provided for @enterPhoneNumber.
   ///
   /// In en, this message translates to:
@@ -320,11 +470,23 @@ abstract class AppLocalizations {
   /// **'Search by phone number'**
   String get searchByPhoneNumber;
 
+  /// No description provided for @searchByEmail.
+  ///
+  /// In en, this message translates to:
+  /// **'Search by email address'**
+  String get searchByEmail;
+
   /// No description provided for @enterPhoneToFind.
   ///
   /// In en, this message translates to:
   /// **'Enter a phone number to find family members.'**
   String get enterPhoneToFind;
+
+  /// No description provided for @enterEmailToFind.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter an email address to find family members.'**
+  String get enterEmailToFind;
 
   /// No description provided for @searchFailed.
   ///
@@ -446,6 +608,24 @@ abstract class AppLocalizations {
   /// **'English, Русский'**
   String get languageSubtitle;
 
+  /// No description provided for @developer.
+  ///
+  /// In en, this message translates to:
+  /// **'Developer'**
+  String get developer;
+
+  /// No description provided for @callDebugLogs.
+  ///
+  /// In en, this message translates to:
+  /// **'Call debug logs'**
+  String get callDebugLogs;
+
+  /// No description provided for @callDebugLogsSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'ICE candidates, TURN, connection state'**
+  String get callDebugLogsSubtitle;
+
   /// No description provided for @signOut.
   ///
   /// In en, this message translates to:
@@ -461,7 +641,7 @@ abstract class AppLocalizations {
   /// No description provided for @signOutConfirmMessage.
   ///
   /// In en, this message translates to:
-  /// **'Are you sure you want to sign out? You will need to verify your phone number again to sign in.'**
+  /// **'Are you sure you want to sign out? You will need your email and password to sign in again.'**
   String get signOutConfirmMessage;
 
   /// No description provided for @cancel.
@@ -469,6 +649,30 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Cancel'**
   String get cancel;
+
+  /// No description provided for @startupPermissionsMissing.
+  ///
+  /// In en, this message translates to:
+  /// **'Some permissions are still missing. Please enable them in iOS Settings.'**
+  String get startupPermissionsMissing;
+
+  /// No description provided for @openSettingsAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Open Settings'**
+  String get openSettingsAction;
+
+  /// No description provided for @callMicrophonePermissionRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Microphone access is required for calls. Enable it in Settings.'**
+  String get callMicrophonePermissionRequired;
+
+  /// No description provided for @notificationsDisabledCallsWarning.
+  ///
+  /// In en, this message translates to:
+  /// **'Notifications are disabled — incoming calls will not be shown. Enable notifications in Settings.'**
+  String get notificationsDisabledCallsWarning;
 
   /// No description provided for @microphonePermissionRequired.
   ///
@@ -569,7 +773,7 @@ abstract class AppLocalizations {
   /// No description provided for @searchForFamilyMembers.
   ///
   /// In en, this message translates to:
-  /// **'Search for family members by phone number.'**
+  /// **'Search for family members by email address.'**
   String get searchForFamilyMembers;
 
   /// No description provided for @noUsersFoundInstallApp.

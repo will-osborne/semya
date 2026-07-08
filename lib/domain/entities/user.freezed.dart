@@ -15,7 +15,7 @@ T _$identity<T>(T value) => value;
 /// @nodoc
 mixin _$AppUser {
 
- String get id; String get phoneNumber; String? get displayName; String? get photoUrl; DateTime get createdAt; List<String> get deviceIds; List<String> get fcmTokens;
+ String get id; String get phoneNumber; String? get email; String? get displayName; String? get photoUrl; DateTime get createdAt; List<String> get deviceIds; List<String> get fcmTokens;
 /// Create a copy of AppUser
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -28,16 +28,16 @@ $AppUserCopyWith<AppUser> get copyWith => _$AppUserCopyWithImpl<AppUser>(this as
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AppUser&&(identical(other.id, id) || other.id == id)&&(identical(other.phoneNumber, phoneNumber) || other.phoneNumber == phoneNumber)&&(identical(other.displayName, displayName) || other.displayName == displayName)&&(identical(other.photoUrl, photoUrl) || other.photoUrl == photoUrl)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt)&&const DeepCollectionEquality().equals(other.deviceIds, deviceIds)&&const DeepCollectionEquality().equals(other.fcmTokens, fcmTokens));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AppUser&&(identical(other.id, id) || other.id == id)&&(identical(other.phoneNumber, phoneNumber) || other.phoneNumber == phoneNumber)&&(identical(other.email, email) || other.email == email)&&(identical(other.displayName, displayName) || other.displayName == displayName)&&(identical(other.photoUrl, photoUrl) || other.photoUrl == photoUrl)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt)&&const DeepCollectionEquality().equals(other.deviceIds, deviceIds)&&const DeepCollectionEquality().equals(other.fcmTokens, fcmTokens));
 }
 
 @JsonKey(includeFromJson: false, includeToJson: false)
 @override
-int get hashCode => Object.hash(runtimeType,id,phoneNumber,displayName,photoUrl,createdAt,const DeepCollectionEquality().hash(deviceIds),const DeepCollectionEquality().hash(fcmTokens));
+int get hashCode => Object.hash(runtimeType,id,phoneNumber,email,displayName,photoUrl,createdAt,const DeepCollectionEquality().hash(deviceIds),const DeepCollectionEquality().hash(fcmTokens));
 
 @override
 String toString() {
-  return 'AppUser(id: $id, phoneNumber: $phoneNumber, displayName: $displayName, photoUrl: $photoUrl, createdAt: $createdAt, deviceIds: $deviceIds, fcmTokens: $fcmTokens)';
+  return 'AppUser(id: $id, phoneNumber: $phoneNumber, email: $email, displayName: $displayName, photoUrl: $photoUrl, createdAt: $createdAt, deviceIds: $deviceIds, fcmTokens: $fcmTokens)';
 }
 
 
@@ -48,7 +48,7 @@ abstract mixin class $AppUserCopyWith<$Res>  {
   factory $AppUserCopyWith(AppUser value, $Res Function(AppUser) _then) = _$AppUserCopyWithImpl;
 @useResult
 $Res call({
- String id, String phoneNumber, String? displayName, String? photoUrl, DateTime createdAt, List<String> deviceIds, List<String> fcmTokens
+ String id, String phoneNumber, String? email, String? displayName, String? photoUrl, DateTime createdAt, List<String> deviceIds, List<String> fcmTokens
 });
 
 
@@ -65,11 +65,12 @@ class _$AppUserCopyWithImpl<$Res>
 
 /// Create a copy of AppUser
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? phoneNumber = null,Object? displayName = freezed,Object? photoUrl = freezed,Object? createdAt = null,Object? deviceIds = null,Object? fcmTokens = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? phoneNumber = null,Object? email = freezed,Object? displayName = freezed,Object? photoUrl = freezed,Object? createdAt = null,Object? deviceIds = null,Object? fcmTokens = null,}) {
   return _then(_self.copyWith(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,phoneNumber: null == phoneNumber ? _self.phoneNumber : phoneNumber // ignore: cast_nullable_to_non_nullable
-as String,displayName: freezed == displayName ? _self.displayName : displayName // ignore: cast_nullable_to_non_nullable
+as String,email: freezed == email ? _self.email : email // ignore: cast_nullable_to_non_nullable
+as String?,displayName: freezed == displayName ? _self.displayName : displayName // ignore: cast_nullable_to_non_nullable
 as String?,photoUrl: freezed == photoUrl ? _self.photoUrl : photoUrl // ignore: cast_nullable_to_non_nullable
 as String?,createdAt: null == createdAt ? _self.createdAt : createdAt // ignore: cast_nullable_to_non_nullable
 as DateTime,deviceIds: null == deviceIds ? _self.deviceIds : deviceIds // ignore: cast_nullable_to_non_nullable
@@ -159,10 +160,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  String phoneNumber,  String? displayName,  String? photoUrl,  DateTime createdAt,  List<String> deviceIds,  List<String> fcmTokens)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  String phoneNumber,  String? email,  String? displayName,  String? photoUrl,  DateTime createdAt,  List<String> deviceIds,  List<String> fcmTokens)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AppUser() when $default != null:
-return $default(_that.id,_that.phoneNumber,_that.displayName,_that.photoUrl,_that.createdAt,_that.deviceIds,_that.fcmTokens);case _:
+return $default(_that.id,_that.phoneNumber,_that.email,_that.displayName,_that.photoUrl,_that.createdAt,_that.deviceIds,_that.fcmTokens);case _:
   return orElse();
 
 }
@@ -180,10 +181,10 @@ return $default(_that.id,_that.phoneNumber,_that.displayName,_that.photoUrl,_tha
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  String phoneNumber,  String? displayName,  String? photoUrl,  DateTime createdAt,  List<String> deviceIds,  List<String> fcmTokens)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  String phoneNumber,  String? email,  String? displayName,  String? photoUrl,  DateTime createdAt,  List<String> deviceIds,  List<String> fcmTokens)  $default,) {final _that = this;
 switch (_that) {
 case _AppUser():
-return $default(_that.id,_that.phoneNumber,_that.displayName,_that.photoUrl,_that.createdAt,_that.deviceIds,_that.fcmTokens);case _:
+return $default(_that.id,_that.phoneNumber,_that.email,_that.displayName,_that.photoUrl,_that.createdAt,_that.deviceIds,_that.fcmTokens);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -200,10 +201,10 @@ return $default(_that.id,_that.phoneNumber,_that.displayName,_that.photoUrl,_tha
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  String phoneNumber,  String? displayName,  String? photoUrl,  DateTime createdAt,  List<String> deviceIds,  List<String> fcmTokens)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  String phoneNumber,  String? email,  String? displayName,  String? photoUrl,  DateTime createdAt,  List<String> deviceIds,  List<String> fcmTokens)?  $default,) {final _that = this;
 switch (_that) {
 case _AppUser() when $default != null:
-return $default(_that.id,_that.phoneNumber,_that.displayName,_that.photoUrl,_that.createdAt,_that.deviceIds,_that.fcmTokens);case _:
+return $default(_that.id,_that.phoneNumber,_that.email,_that.displayName,_that.photoUrl,_that.createdAt,_that.deviceIds,_that.fcmTokens);case _:
   return null;
 
 }
@@ -215,11 +216,12 @@ return $default(_that.id,_that.phoneNumber,_that.displayName,_that.photoUrl,_tha
 @JsonSerializable()
 
 class _AppUser implements AppUser {
-  const _AppUser({required this.id, required this.phoneNumber, this.displayName, this.photoUrl, required this.createdAt, required final  List<String> deviceIds, final  List<String> fcmTokens = const []}): _deviceIds = deviceIds,_fcmTokens = fcmTokens;
+  const _AppUser({required this.id, required this.phoneNumber, this.email, this.displayName, this.photoUrl, required this.createdAt, required final  List<String> deviceIds, final  List<String> fcmTokens = const []}): _deviceIds = deviceIds,_fcmTokens = fcmTokens;
   factory _AppUser.fromJson(Map<String, dynamic> json) => _$AppUserFromJson(json);
 
 @override final  String id;
 @override final  String phoneNumber;
+@override final  String? email;
 @override final  String? displayName;
 @override final  String? photoUrl;
 @override final  DateTime createdAt;
@@ -251,16 +253,16 @@ Map<String, dynamic> toJson() {
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is _AppUser&&(identical(other.id, id) || other.id == id)&&(identical(other.phoneNumber, phoneNumber) || other.phoneNumber == phoneNumber)&&(identical(other.displayName, displayName) || other.displayName == displayName)&&(identical(other.photoUrl, photoUrl) || other.photoUrl == photoUrl)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt)&&const DeepCollectionEquality().equals(other._deviceIds, _deviceIds)&&const DeepCollectionEquality().equals(other._fcmTokens, _fcmTokens));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is _AppUser&&(identical(other.id, id) || other.id == id)&&(identical(other.phoneNumber, phoneNumber) || other.phoneNumber == phoneNumber)&&(identical(other.email, email) || other.email == email)&&(identical(other.displayName, displayName) || other.displayName == displayName)&&(identical(other.photoUrl, photoUrl) || other.photoUrl == photoUrl)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt)&&const DeepCollectionEquality().equals(other._deviceIds, _deviceIds)&&const DeepCollectionEquality().equals(other._fcmTokens, _fcmTokens));
 }
 
 @JsonKey(includeFromJson: false, includeToJson: false)
 @override
-int get hashCode => Object.hash(runtimeType,id,phoneNumber,displayName,photoUrl,createdAt,const DeepCollectionEquality().hash(_deviceIds),const DeepCollectionEquality().hash(_fcmTokens));
+int get hashCode => Object.hash(runtimeType,id,phoneNumber,email,displayName,photoUrl,createdAt,const DeepCollectionEquality().hash(_deviceIds),const DeepCollectionEquality().hash(_fcmTokens));
 
 @override
 String toString() {
-  return 'AppUser(id: $id, phoneNumber: $phoneNumber, displayName: $displayName, photoUrl: $photoUrl, createdAt: $createdAt, deviceIds: $deviceIds, fcmTokens: $fcmTokens)';
+  return 'AppUser(id: $id, phoneNumber: $phoneNumber, email: $email, displayName: $displayName, photoUrl: $photoUrl, createdAt: $createdAt, deviceIds: $deviceIds, fcmTokens: $fcmTokens)';
 }
 
 
@@ -271,7 +273,7 @@ abstract mixin class _$AppUserCopyWith<$Res> implements $AppUserCopyWith<$Res> {
   factory _$AppUserCopyWith(_AppUser value, $Res Function(_AppUser) _then) = __$AppUserCopyWithImpl;
 @override @useResult
 $Res call({
- String id, String phoneNumber, String? displayName, String? photoUrl, DateTime createdAt, List<String> deviceIds, List<String> fcmTokens
+ String id, String phoneNumber, String? email, String? displayName, String? photoUrl, DateTime createdAt, List<String> deviceIds, List<String> fcmTokens
 });
 
 
@@ -288,11 +290,12 @@ class __$AppUserCopyWithImpl<$Res>
 
 /// Create a copy of AppUser
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? phoneNumber = null,Object? displayName = freezed,Object? photoUrl = freezed,Object? createdAt = null,Object? deviceIds = null,Object? fcmTokens = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? phoneNumber = null,Object? email = freezed,Object? displayName = freezed,Object? photoUrl = freezed,Object? createdAt = null,Object? deviceIds = null,Object? fcmTokens = null,}) {
   return _then(_AppUser(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,phoneNumber: null == phoneNumber ? _self.phoneNumber : phoneNumber // ignore: cast_nullable_to_non_nullable
-as String,displayName: freezed == displayName ? _self.displayName : displayName // ignore: cast_nullable_to_non_nullable
+as String,email: freezed == email ? _self.email : email // ignore: cast_nullable_to_non_nullable
+as String?,displayName: freezed == displayName ? _self.displayName : displayName // ignore: cast_nullable_to_non_nullable
 as String?,photoUrl: freezed == photoUrl ? _self.photoUrl : photoUrl // ignore: cast_nullable_to_non_nullable
 as String?,createdAt: null == createdAt ? _self.createdAt : createdAt // ignore: cast_nullable_to_non_nullable
 as DateTime,deviceIds: null == deviceIds ? _self._deviceIds : deviceIds // ignore: cast_nullable_to_non_nullable

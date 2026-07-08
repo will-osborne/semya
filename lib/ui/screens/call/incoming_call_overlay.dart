@@ -1,10 +1,14 @@
 import 'dart:async';
 import 'dart:developer' as dev;
+import 'dart:io';
 
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import 'package:semya/config/router.dart';
+import 'package:semya/data/services/call_debug_log.dart';
 import 'package:semya/domain/entities/call.dart';
 import 'package:semya/l10n/app_localizations.dart';
 import 'package:semya/providers/auth_provider.dart';
@@ -26,10 +30,18 @@ class IncomingCallOverlay extends ConsumerStatefulWidget {
 
 class _IncomingCallOverlayState extends ConsumerState<IncomingCallOverlay>
     with WidgetsBindingObserver {
+  // Shared-preferences keys written by the iOS AppDelegate fallback
+  // CXProvider when a terminated-state call is answered/declined before the
+  // Flutter engine is running.
+  static const _pendingAcceptedCallKey = 'pending_accepted_call';
+  static const _pendingDeclinedCallKey = 'pending_declined_call';
+
   String? _activeCallKitId;
   String? _pendingVoipToken;
   String? _pendingAcceptedCallId;
   bool _isRecoveringAcceptedCall = false;
+  bool _notificationWarningShown = false;
+  StreamSubscription<RemoteMessage>? _cancelPushSub;
 
   @override
   void initState() {
@@ -37,7 +49,23 @@ class _IncomingCallOverlayState extends ConsumerState<IncomingCallOverlay>
     WidgetsBinding.instance.addObserver(this);
 
     final callKitService = ref.read(callKitServiceProvider);
-    unawaited(ref.read(notificationProvider.notifier).initialize());
+    unawaited(_initNotifications());
+
+    // Foreground cancel pushes: the Firestore incoming-call stream also
+    // dismisses CallKit when a call stops ringing, but the push is the
+    // authoritative signal when the stream is unavailable (e.g. auth still
+    // loading). Ending an unknown call id is a no-op.
+    _cancelPushSub = FirebaseMessaging.onMessage.listen((message) {
+      if (message.data['type'] != 'call_cancelled') return;
+      final callId = message.data['callId'] as String? ?? '';
+      if (callId.isEmpty) return;
+      CallDebugLog.add(
+        'Foreground cancel push received for $callId',
+        name: 'Call',
+      );
+      unawaited(ref.read(callKitServiceProvider).endCall(callId));
+      if (_activeCallKitId == callId) _activeCallKitId = null;
+    });
 
     callKitService.onCallAccepted = (callId) async {
       if (!mounted) return;
@@ -69,6 +97,35 @@ class _IncomingCallOverlayState extends ConsumerState<IncomingCallOverlay>
     // Fetch and store initial VoIP token (iOS only).
     unawaited(_initVoipToken());
     unawaited(_recoverAcceptedCallIfNeeded());
+  }
+
+  /// Initializes push notifications (permission request included) and warns
+  /// when the permission was denied on Android — without POST_NOTIFICATIONS
+  /// (Android 13+) the CallKit-style incoming-call UI cannot be shown, so
+  /// incoming calls would be completely invisible.
+  Future<void> _initNotifications() async {
+    await ref.read(notificationProvider.notifier).initialize();
+    if (!mounted || !Platform.isAndroid || _notificationWarningShown) return;
+    if (ref.read(notificationProvider).permissionGranted) return;
+
+    _notificationWarningShown = true;
+    final l10n = AppLocalizations.of(context);
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(
+        content: Text(
+          l10n?.notificationsDisabledCallsWarning ??
+              'Notifications are disabled — incoming calls will not be shown. '
+                  'Enable notifications in Settings.',
+        ),
+        duration: const Duration(seconds: 8),
+        action: SnackBarAction(
+          label: l10n?.openSettingsAction ?? 'Open Settings',
+          onPressed: () {
+            unawaited(openAppSettings());
+          },
+        ),
+      ),
+    );
   }
 
   Future<void> _initVoipToken() async {
@@ -158,6 +215,11 @@ class _IncomingCallOverlayState extends ConsumerState<IncomingCallOverlay>
   Future<void> _recoverAcceptedCallIfNeeded() async {
     if (!mounted || _isRecoveringAcceptedCall) return;
 
+    // Terminated-state CallKit actions persisted by the iOS AppDelegate
+    // fallback CXProvider (UserDefaults → shared_preferences).
+    final handled = await _recoverTerminatedCallKitActions();
+    if (handled || !mounted) return;
+
     final pendingCallId = _pendingAcceptedCallId;
     if (pendingCallId != null) {
       await _handleAcceptedCall(pendingCallId);
@@ -190,6 +252,78 @@ class _IncomingCallOverlayState extends ConsumerState<IncomingCallOverlay>
     }
   }
 
+  // NOTE: media permissions are intentionally NOT requested at startup.
+  // Microphone (and camera, needed at call setup for the video m-line) are
+  // requested when a call starts or is answered (CallNotifier), and photo
+  // access is requested by the image picker at attachment time. Only the
+  // notification permission is requested at startup (via _initNotifications)
+  // because Android 13+ cannot show the incoming-call UI without it.
+
+  /// Reads (then clears) call ids persisted by the iOS AppDelegate fallback
+  /// CXProvider for calls answered/declined while the app was terminated.
+  /// Returns true when an accepted call was recovered and is being handled.
+  Future<bool> _recoverTerminatedCallKitActions() async {
+    final prefs = ref.read(sharedPreferencesProvider);
+    try {
+      // AppDelegate writes UserDefaults directly; reload to see fresh values.
+      await prefs.reload();
+    } catch (_) {}
+
+    final callRepo = ref.read(firestoreCallRepositoryProvider);
+
+    final declinedId = prefs.getString(_pendingDeclinedCallKey);
+    if (declinedId != null && declinedId.isNotEmpty) {
+      try {
+        final call = await callRepo.getCall(declinedId);
+        await prefs.remove(_pendingDeclinedCallKey);
+        if (call != null && call.status == CallStatus.ringing) {
+          CallDebugLog.add(
+            'Terminated-state decline recovered for $declinedId — '
+            'writing rejected',
+            name: 'Call',
+          );
+          await ref.read(callProvider.notifier).rejectCall(declinedId);
+        }
+      } catch (e) {
+        // Leave the key in place for the next recovery pass (e.g. auth not
+        // ready yet, so the Firestore read/write was denied).
+        CallDebugLog.add(
+          'Failed to recover terminated-state decline: $e',
+          name: 'Call',
+        );
+      }
+    }
+
+    final acceptedId = prefs.getString(_pendingAcceptedCallKey);
+    if (acceptedId == null || acceptedId.isEmpty) return false;
+    try {
+      final call = await callRepo.getCall(acceptedId);
+      await prefs.remove(_pendingAcceptedCallKey);
+      if (call == null ||
+          call.status == CallStatus.ended ||
+          call.status == CallStatus.missed ||
+          call.status == CallStatus.rejected) {
+        // Stale id — dismiss any lingering CallKit UI and ignore.
+        unawaited(ref.read(callKitServiceProvider).endCall(acceptedId));
+        return false;
+      }
+      CallDebugLog.add(
+        'Terminated-state accept recovered for $acceptedId',
+        name: 'Call',
+      );
+      _activeCallKitId = acceptedId;
+      await _handleAcceptedCall(acceptedId);
+      return true;
+    } catch (e) {
+      // Leave the key in place for the next recovery pass.
+      CallDebugLog.add(
+        'Failed to recover terminated-state accept: $e',
+        name: 'Call',
+      );
+      return false;
+    }
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.resumed) return;
@@ -200,6 +334,7 @@ class _IncomingCallOverlayState extends ConsumerState<IncomingCallOverlay>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _cancelPushSub?.cancel();
     final callKitService = ref.read(callKitServiceProvider);
     callKitService.onCallAccepted = null;
     callKitService.onCallDeclined = null;
@@ -224,6 +359,30 @@ class _IncomingCallOverlayState extends ConsumerState<IncomingCallOverlay>
       unawaited(_recoverAcceptedCallIfNeeded());
       unawaited(
         ref.read(notificationProvider.notifier).flushPendingNavigation(),
+      );
+    });
+
+    // Surface microphone-permission denials with an actionable message —
+    // call setup fails before the call screen opens, so nothing else
+    // reports this error to the user.
+    ref.listen(callProvider.select((s) => s.error), (previous, next) {
+      if (next == null || next == previous) return;
+      if (next != kCallMicPermissionError) return;
+      final l10n = AppLocalizations.of(context);
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(
+          content: Text(
+            l10n?.callMicrophonePermissionRequired ??
+                'Microphone access is required for calls. '
+                    'Enable it in Settings.',
+          ),
+          action: SnackBarAction(
+            label: l10n?.openSettingsAction ?? 'Open Settings',
+            onPressed: () {
+              unawaited(openAppSettings());
+            },
+          ),
+        ),
       );
     });
 

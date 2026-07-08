@@ -175,10 +175,7 @@ class _ProfileSetupScreenState extends ConsumerState<ProfileSetupScreen> {
 
                   const SizedBox(height: 8),
 
-                  Text(
-                    l10n.changeInSettings,
-                    style: theme.textTheme.bodySmall,
-                  ),
+                  Text(l10n.changeInSettings, style: theme.textTheme.bodySmall),
 
                   const SizedBox(height: 32),
 

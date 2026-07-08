@@ -9,15 +9,70 @@ import 'package:semya/providers/auth_provider.dart';
 import 'package:semya/providers/providers.dart';
 
 // ---------------------------------------------------------------------------
+// App lifecycle
+// ---------------------------------------------------------------------------
+
+/// Incremented every time the app returns to the foreground (see the
+/// lifecycle observer in app.dart). Watch/listen to this to resubscribe
+/// Firestore streams that may have gone stale in the background.
+final appResumedProvider = StateProvider<int>((ref) => 0);
+
+// ---------------------------------------------------------------------------
 // Conversations stream (real-time list for the current user)
 // ---------------------------------------------------------------------------
 
+const _kMinStreamBackoff = Duration(seconds: 2);
+const _kMaxStreamBackoff = Duration(seconds: 30);
+
 final conversationsProvider = StreamProvider<List<Conversation>>((ref) {
-  final uid = ref.watch(authProvider).user?.uid;
-  if (uid == null) return const Stream.empty();
+  // Resubscribe with a fresh listener whenever the app resumes.
+  ref.watch(appResumedProvider);
+
+  final uid = ref.watch(authProvider.select((state) => state.user?.uid));
+  if (uid == null) return Stream.value(const <Conversation>[]);
 
   final repo = ref.watch(firestoreConversationRepositoryProvider);
-  return repo.getUserConversations(uid);
+
+  // A raw Firestore stream error would leave the StreamProvider errored until
+  // invalidated. Instead: keep the last emitted data, surface the error only
+  // if nothing has loaded yet, and resubscribe with exponential backoff.
+  final controller = StreamController<List<Conversation>>();
+  StreamSubscription<List<Conversation>>? sub;
+  Timer? retryTimer;
+  var backoff = _kMinStreamBackoff;
+  var hasData = false;
+
+  void subscribe() {
+    sub = repo
+        .getUserConversations(uid)
+        .listen(
+          (conversations) {
+            backoff = _kMinStreamBackoff;
+            hasData = true;
+            controller.add(conversations);
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            if (!hasData) controller.addError(error, stackTrace);
+            sub?.cancel();
+            retryTimer?.cancel();
+            retryTimer = Timer(backoff, subscribe);
+            final doubled = backoff * 2;
+            backoff = doubled > _kMaxStreamBackoff
+                ? _kMaxStreamBackoff
+                : doubled;
+          },
+        );
+  }
+
+  subscribe();
+
+  ref.onDispose(() {
+    retryTimer?.cancel();
+    sub?.cancel();
+    controller.close();
+  });
+
+  return controller.stream;
 });
 
 final activeConversationIdProvider = StateProvider<String?>((ref) => null);
@@ -28,13 +83,15 @@ final activeConversationIdProvider = StateProvider<String?>((ref) => null);
 
 final conversationDetailProvider = StreamProvider.family<Conversation?, String>(
   (ref, conversationId) {
+    // Resubscribe on app resume so a stale/errored listener recovers.
+    ref.watch(appResumedProvider);
     final repo = ref.watch(firestoreConversationRepositoryProvider);
     return repo.watchConversation(conversationId);
   },
 );
 
 // ---------------------------------------------------------------------------
-// User search by phone number
+// User search by email
 // ---------------------------------------------------------------------------
 
 final userSearchProvider = FutureProvider.family<List<AppUser>, String>((
@@ -43,7 +100,7 @@ final userSearchProvider = FutureProvider.family<List<AppUser>, String>((
 ) {
   if (query.trim().isEmpty) return Future.value([]);
   final repo = ref.watch(firestoreUserRepositoryProvider);
-  return repo.searchUsersByPhone(query.trim());
+  return repo.searchUsersByEmail(query.trim());
 });
 
 // ---------------------------------------------------------------------------

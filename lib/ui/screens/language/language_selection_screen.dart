@@ -114,9 +114,7 @@ class _LanguageSelectionScreenState
                   onPressed: () {
                     ref.read(localeProvider.notifier).setLocale(_selected);
                   },
-                  child: Text(
-                    l10n?.continueButton ?? 'Continue',
-                  ),
+                  child: Text(l10n?.continueButton ?? 'Continue'),
                 ),
 
                 const Spacer(flex: 3),
@@ -169,10 +167,7 @@ class _LanguageOption extends StatelessWidget {
               ),
               const Spacer(),
               if (isSelected)
-                Icon(
-                  Icons.check_circle,
-                  color: colorScheme.primary,
-                ),
+                Icon(Icons.check_circle, color: colorScheme.primary),
             ],
           ),
         ),

@@ -16,18 +16,12 @@ class AuthState {
     this.user,
     this.isLoading = false,
     this.error,
-    this.verificationId,
-    this.resendToken,
-    this.codeSent = false,
   });
 
   final bool isAuthenticated;
   final fb.User? user;
   final bool isLoading;
   final String? error;
-  final String? verificationId;
-  final int? resendToken;
-  final bool codeSent;
 
   AuthState copyWith({
     bool? isAuthenticated,
@@ -36,9 +30,6 @@ class AuthState {
     bool? isLoading,
     String? error,
     bool clearError = false,
-    String? verificationId,
-    int? resendToken,
-    bool? codeSent,
   }) {
     return AuthState(
       isAuthenticated:
@@ -46,9 +37,6 @@ class AuthState {
       user: clearUser ? null : (user ?? this.user),
       isLoading: isLoading ?? this.isLoading,
       error: clearError ? null : (error ?? this.error),
-      verificationId: verificationId ?? this.verificationId,
-      resendToken: resendToken ?? this.resendToken,
-      codeSent: codeSent ?? this.codeSent,
     );
   }
 }
@@ -81,18 +69,20 @@ class AuthNotifier extends StateNotifier<AuthState> {
     );
   }
 
-  /// Initiates phone number verification.
-  ///
-  /// On success, [state.codeSent] becomes true and [state.verificationId]
-  /// is populated so the OTP screen can proceed.
-  Future<void> verifyPhone(String phoneNumber) async {
-    state = state.copyWith(isLoading: true, clearError: true, codeSent: false);
+  bool get hasPasswordProvider {
+    final user = state.user;
+    if (user == null) return false;
+    return user.providerData.any((info) => info.providerId == 'password');
+  }
+
+  Future<String> requestSmsCode(String phoneNumber) async {
+    state = state.copyWith(isLoading: true, clearError: true);
+    final completer = Completer<String>();
 
     try {
       await _authRepository.verifyPhoneNumber(
         phoneNumber: phoneNumber,
         verificationCompleted: (fb.PhoneAuthCredential credential) async {
-          // Android auto-retrieval path.
           try {
             final result = await _authRepository.signInWithCredential(
               credential,
@@ -102,35 +92,39 @@ class AuthNotifier extends StateNotifier<AuthState> {
               user: result.user,
               isLoading: false,
             );
+            if (!completer.isCompleted) completer.complete('');
           } catch (e) {
+            if (!completer.isCompleted) completer.completeError(e);
             state = state.copyWith(isLoading: false, error: e.toString());
           }
         },
         verificationFailed: (fb.FirebaseAuthException exception) {
+          if (!completer.isCompleted) {
+            completer.completeError(
+              exception.message ?? 'Phone verification failed.',
+            );
+          }
           state = state.copyWith(
             isLoading: false,
-            error: exception.message ?? 'Verification failed.',
+            error: exception.message ?? 'Phone verification failed.',
           );
         },
-        codeSent: (String verificationId, int? resendToken) {
-          state = state.copyWith(
-            isLoading: false,
-            verificationId: verificationId,
-            resendToken: resendToken,
-            codeSent: true,
-            clearError: true,
-          );
+        codeSent: (String verificationId, int? _) {
+          state = state.copyWith(isLoading: false, clearError: true);
+          if (!completer.isCompleted) completer.complete(verificationId);
         },
-        codeAutoRetrievalTimeout: (_) {
-          state = state.copyWith(isLoading: false);
+        codeAutoRetrievalTimeout: (String verificationId) {
+          if (!completer.isCompleted) completer.complete(verificationId);
         },
       );
+
+      return await completer.future;
     } catch (e) {
       state = state.copyWith(isLoading: false, error: e.toString());
+      rethrow;
     }
   }
 
-  /// Signs the user in using the SMS code they received.
   Future<void> signInWithSmsCode({
     required String verificationId,
     required String smsCode,
@@ -144,6 +138,72 @@ class AuthNotifier extends StateNotifier<AuthState> {
       state = state.copyWith(
         isAuthenticated: true,
         user: result.user,
+        isLoading: false,
+      );
+    } on fb.FirebaseAuthException catch (e) {
+      state = state.copyWith(isLoading: false, error: e.message);
+    } catch (e) {
+      state = state.copyWith(isLoading: false, error: e.toString());
+    }
+  }
+
+  Future<void> signInWithEmailPassword({
+    required String email,
+    required String password,
+  }) async {
+    state = state.copyWith(isLoading: true, clearError: true);
+    try {
+      final result = await _authRepository.signInWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
+      state = state.copyWith(
+        isAuthenticated: true,
+        user: result.user,
+        isLoading: false,
+      );
+    } on fb.FirebaseAuthException catch (e) {
+      state = state.copyWith(isLoading: false, error: e.message);
+    } catch (e) {
+      state = state.copyWith(isLoading: false, error: e.toString());
+    }
+  }
+
+  Future<void> createAccountWithEmailPassword({
+    required String email,
+    required String password,
+  }) async {
+    state = state.copyWith(isLoading: true, clearError: true);
+    try {
+      final result = await _authRepository.createUserWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
+      state = state.copyWith(
+        isAuthenticated: true,
+        user: result.user,
+        isLoading: false,
+      );
+    } on fb.FirebaseAuthException catch (e) {
+      state = state.copyWith(isLoading: false, error: e.message);
+    } catch (e) {
+      state = state.copyWith(isLoading: false, error: e.toString());
+    }
+  }
+
+  Future<void> linkEmailPasswordToCurrentUser({
+    required String email,
+    required String password,
+  }) async {
+    state = state.copyWith(isLoading: true, clearError: true);
+    try {
+      final linkedUser = await _authRepository.linkCurrentUserWithEmailPassword(
+        email: email,
+        password: password,
+      );
+      state = state.copyWith(
+        isAuthenticated: true,
+        user: linkedUser,
         isLoading: false,
       );
     } on fb.FirebaseAuthException catch (e) {

@@ -16,10 +16,16 @@ _Message _$MessageFromJson(Map<String, dynamic> json) => _Message(
   serverTimestamp: json['serverTimestamp'] == null
       ? null
       : DateTime.parse(json['serverTimestamp'] as String),
-  status: $enumDecode(_$MessageStatusEnumMap, json['status']),
+  status: $enumDecode(
+    _$MessageStatusEnumMap,
+    json['status'],
+    unknownValue: MessageStatus.sent,
+  ),
+  uploadPending: json['uploadPending'] as bool? ?? false,
   thumbnailUrl: json['thumbnailUrl'] as String?,
   mediaWidth: (json['mediaWidth'] as num?)?.toInt(),
   mediaHeight: (json['mediaHeight'] as num?)?.toInt(),
+  durationMs: (json['durationMs'] as num?)?.toInt(),
 );
 
 Map<String, dynamic> _$MessageToJson(_Message instance) => <String, dynamic>{
@@ -31,9 +37,11 @@ Map<String, dynamic> _$MessageToJson(_Message instance) => <String, dynamic>{
   'timestamp': instance.timestamp.toIso8601String(),
   'serverTimestamp': instance.serverTimestamp?.toIso8601String(),
   'status': _$MessageStatusEnumMap[instance.status]!,
+  'uploadPending': instance.uploadPending,
   'thumbnailUrl': instance.thumbnailUrl,
   'mediaWidth': instance.mediaWidth,
   'mediaHeight': instance.mediaHeight,
+  'durationMs': instance.durationMs,
 };
 
 const _$MessageTypeEnumMap = {

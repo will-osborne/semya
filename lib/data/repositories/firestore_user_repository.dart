@@ -42,6 +42,17 @@ class FirestoreUserRepository implements UserRepository {
   }
 
   @override
+  Future<List<AppUser>> searchUsersByEmail(String email) async {
+    final snapshot = await _usersCollection
+        .where('email', isEqualTo: email.toLowerCase().trim())
+        .get();
+
+    return snapshot.docs
+        .map((doc) => AppUser.fromJson(_withId(doc.id, doc.data())))
+        .toList();
+  }
+
+  @override
   Future<void> addFcmToken(String userId, String token) async {
     await _usersCollection.doc(userId).update({
       'fcmTokens': FieldValue.arrayUnion([token]),
